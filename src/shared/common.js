@@ -18,11 +18,17 @@ export const MSG = /** @type {const} */ ({
   GET_STATE: "get-state",
   SET_SETTINGS: "set-settings",
   RESET_BASELINE: "reset-baseline",
+  GET_HISTORY: "get-history",
+  CLEAR_HISTORY: "clear-history",
+  OPEN_HISTORY: "open-history",
+  OPEN_TAB: "open-tab",
   // offscreen
   PLAY: "play",
 });
 
 export const DEFAULTS = Object.freeze({
+  /** Label manual profil ini, bukan identitas akun/login Shopee. */
+  profileLabel: "",
   enabled: true,
   notifyOrders: true,
   notifyChats: true,
@@ -46,6 +52,7 @@ export const DEFAULTS = Object.freeze({
 export const STORE = /** @type {const} */ ({
   SETTINGS: "settings",
   STATS: "stats",
+  HISTORY: "history",
 });
 
 /**
@@ -63,7 +70,9 @@ export function withDefaults(raw) {
     else if (typeof def === "number") {
       const n = Number(v);
       if (Number.isFinite(n)) out[key] = n;
-    } else out[key] = v;
+    } else if (typeof def === "string" && typeof v === "string") {
+      out[key] = v.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim().slice(0, 48);
+    }
   }
   out.pollSeconds = clamp(out.pollSeconds, 15, 600);
   out.cooldownSeconds = clamp(out.cooldownSeconds, 0, 600);

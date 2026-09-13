@@ -1,5 +1,6 @@
 // Smoke test logika deteksi. Jalankan: node tools/smoke-detect.mjs
 import { applyReading, createState, normalizeCount, restoreReading, totalUnread } from "../src/shared/detect.js";
+import { withDefaults } from "../src/shared/common.js";
 
 const OPTS = { onlyOnIncrease: true, cooldownSeconds: 5, notifyOrders: true, notifyChats: true };
 let fail = 0;
@@ -162,6 +163,15 @@ const check = (name, cond, extra = "") => {
   const retry = applyReading(st, { kind: "notif", count: 1, source: "dom" }, OPTS, 2_000);
   check("kegagalan awal tetap menghasilkan event", failed.event?.count === 1, failed.reason);
   check("angka sama dapat dicoba ulang setelah rollback", retry.event?.count === 1 && retry.event.prev === 0, retry.reason);
+}
+
+// Label profil adalah teks lokal: buang kontrol, batasi judul toast, dan tolak objek.
+{
+  check("label profil dibersihkan tanpa merusak teks",
+    withDefaults({ profileLabel: " \nGudang\u0000 Barat\t " }).profileLabel === "Gudang Barat");
+  check("label profil dibatasi dan nilai nonteks ditolak",
+    withDefaults({ profileLabel: "A".repeat(60) }).profileLabel === "A".repeat(48) &&
+    withDefaults({ profileLabel: { name: "Toko" } }).profileLabel === "");
 }
 
 console.log(fail ? `\n${fail} test gagal` : "\nsemua test lolos");

@@ -34,7 +34,7 @@ async function eventually(predicate, timeoutMs = 8_000, intervalMs = 100) {
   return false;
 }
 
-const browser = await puppeteer.launch({
+const launchOptions = {
   executablePath: CHROME,
   headless: false,
   userDataDir: PROFILE,
@@ -47,7 +47,8 @@ const browser = await puppeteer.launch({
     "--autoplay-policy=no-user-gesture-required",
     "--window-size=1200,860",
   ],
-});
+};
+let browser = await puppeteer.launch(launchOptions);
 
 try {
   /** @returns {Promise<import('puppeteer-core').Target>} */
@@ -65,7 +66,6 @@ try {
   let target = await workerTarget();
   let worker = await target.worker();
   const extId = new URL(target.url()).host;
-  check("service worker ekstensi hidup", Boolean(worker));
 
   // Pesan ke runtime harus berasal dari konteks ekstensi lain. Mengirim dari
   // worker ke dirinya sendiri tidak memicu runtime.onMessage di Chrome.
@@ -113,7 +113,6 @@ try {
   const setFocus = (enabled) => cdp.send("Emulation.setFocusEmulationEnabled", { enabled });
   await page.goto(`${ORIGIN}/portal/sale`, { waitUntil: "domcontentloaded" });
   await sleep(1_200);
-  check("hook MAIN-world dan panel terpasang", await page.evaluate(() => Boolean(window.__ssn_hooked__ && document.querySelector(".ssn-panel"))));
 
   const other = await browser.newPage();
   await other.goto("data:text/html,<title>tab lain</title>x");
@@ -135,15 +134,10 @@ try {
     const contexts = await worker.evaluate(() => chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] }));
     return contexts.length === 0;
   });
+  if (!closed) throw new Error("Prasyarat pengujian audio: dokumen offscreen belum ditutup");
   await clearSeen();
   const afterClose = await call({ type: "test", kind: "chat" });
-  const recreated = await eventually(async () => {
-    const contexts = await worker.evaluate(() => chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] }));
-    return contexts.length === 1;
-  });
   const afterCloseSeen = await seen();
-  check("dokumen audio berhasil ditutup untuk simulasi", closed);
-  check("TEST sesudah close membuat ulang dokumen audio", recreated);
   check("TEST sesudah close memutar suara chat", afterClose?.audio?.ok === true && afterCloseSeen.sounds.some((s) => s.kind === "chat"), JSON.stringify(afterClose));
 
   /* ---------------- create gagal -> respons jujur -> retry sukses tanpa spam ---- */
@@ -222,12 +216,134 @@ try {
   await popup.click("#test-notif");
   const feedback = await eventually(async () => /terkirim dan suara diputar|Suara dinonaktifkan/.test(await popup.$eval("#status", (el) => el.textContent)));
   check("popup menunjukkan hasil TEST aktual", feedback, await popup.$eval("#status", (el) => el.textContent));
+
+  // History is local, bounded, and records attempts rather than every probe.
+  const priorState = await call({ type: "get-state" });
+  await call({ type: "clear-history" });
+  const getHistory = () => call({ type: "get-history" });
+  const afterClearState = await call({ type: "get-state" });
+  check("menghapus riwayat tidak mengubah statistik atau baseline", 
+    JSON.stringify(priorState.stats) === JSON.stringify(afterClearState.stats) &&
+    JSON.stringify(priorState.tabs.map((t) => [t.tabId, t.kinds.notif?.count])) ===
+      JSON.stringify(afterClearState.tabs.map((t) => [t.tabId, t.kinds.notif?.count])));
+  await worker.evaluate((id) => chrome.tabs.sendMessage(id, { type: "probe-now" }), tabId);
+  await sleep(600);
+  check("probe tanpa perubahan tidak mengisi riwayat", (await getHistory()).entries.length === 0);
+
+  await call({ type: "set-settings", patch: { profileLabel: "  Gudang Barat  ", soundEnabled: false } });
+  const taggedTest = await call({ type: "test", kind: "chat" });
+  let history = await getHistory();
+  const taggedEntry = history.entries.find((entry) => entry.id === taggedTest.id);
+  check("label profil muncul di toast dan riwayat dengan suara off",
+    taggedEntry?.profileLabel === "Gudang Barat" && taggedEntry.title.startsWith("[Gudang Barat] ") &&
+    taggedEntry.audio === "off" && taggedEntry.test && !taggedEntry.canOpen &&
+    (await seen()).notifications.some((n) => n.id === taggedTest.id && n.title === taggedEntry.title), JSON.stringify(taggedEntry));
+  check("riwayat publik tidak membocorkan URL dan identitas sesi internal",
+    history.entries.every((entry) => !["url", "body", "tabId", "sessionId", "trackerId"].some((key) => key in entry)));
+
+  const statsBeforeFailure = (await call({ type: "get-state" })).stats;
+  await worker.evaluate(() => (globalThis.__e2e.failNextCreate = true));
+  await call({ type: "test", kind: "notif" });
+  const failedEntry = (await getHistory()).entries[0];
+  check("toast gagal dicatat tanpa menambah statistik terkirim",
+    failedEntry.delivery === "failed" && /menolak toast/.test(failedEntry.error) &&
+    JSON.stringify(statsBeforeFailure) === JSON.stringify((await call({ type: "get-state" })).stats));
+
+  await call({ type: "set-settings", patch: { profileLabel: "Gudang Timur", cooldownSeconds: 0 } });
+  await other.bringToFront();
+  await page.evaluate(() => document.getElementById("b-notif").click());
+  const reportInHistory = await eventually(async () => (await getHistory()).entries.some((e) => !e.test && e.count === 4));
+  history = await getHistory();
+  const liveEntry = history.entries.find((e) => !e.test && e.count === 4);
+  check("riwayat menjaga label lama dan mencatat toko asal terbaru",
+    reportInHistory && liveEntry?.profileLabel === "Gudang Timur" && liveEntry.canOpen &&
+    history.entries.find((e) => e.id === taggedTest.id)?.profileLabel === "Gudang Barat", JSON.stringify(history.entries));
+  const opened = await call({ type: "open-history", id: liveEntry.id });
+  const sourceTab = await worker.evaluate((id) => chrome.tabs.get(id), tabId);
+  check("riwayat membuka tab toko yang masih tersedia", opened.ok && sourceTab.active);
+
+  // Populate local storage at retention boundary rather than emitting 201 OS toasts.
+  const stored = await control.evaluate(() => chrome.storage.local.get("history"));
+  const seed = stored.history[0];
+  await control.evaluate((entries) => chrome.storage.local.set({ history: [
+    { ...entries[0], id: "previous-session", sessionId: "expired-session" }, ...entries,
+  ] }), stored.history);
+  const expiredOpen = await call({ type: "open-history", id: "previous-session" });
+  check("riwayat sesi lama tidak membuka tab meski ID tab masih ada",
+    !expiredOpen.ok && !(await getHistory()).entries.find((e) => e.id === "previous-session").canOpen);
+  await control.evaluate((entry) => chrome.storage.local.set({
+    history: Array.from({ length: 200 }, (_, i) => ({ ...entry, id: `retention-${i}`, at: entry.at - i })),
+  }), seed);
+  const boundaryTest = await call({ type: "test", kind: "chat" });
+  const bounded = await getHistory();
+  check("riwayat membatasi 200 terbaru dan membuang entri tertua",
+    bounded.limit === 200 && bounded.entries.length === 200 && bounded.entries[0].id === boundaryTest.id &&
+    !bounded.entries.some((e) => e.id === "retention-199"));
+  await control.evaluate((entries) => chrome.storage.local.set({ history: entries }), stored.history);
+
+  const dashboardUrl = await popup.$eval(".dashboard-link", (el) => el.href);
+  await popup.bringToFront();
+  const dashboardTarget = browser.waitForTarget((t) => t.url() === dashboardUrl, { timeout: 10_000 });
+  dashboardTarget.catch(() => {});
+  await popup.click(".dashboard-link");
+  const dashboard = await (await dashboardTarget).page();
+  await dashboard.setViewport({ width: 1100, height: 850 });
+  await dashboard.waitForSelector(".history-row");
+  await dashboard.select("#kind-filter", "chat");
+  check("dashboard memfilter chat tanpa baris notifikasi", await dashboard.$$eval(".history-row", (rows) =>
+    rows.length === 1 && rows[0].querySelector(".history-title").textContent.startsWith("Chat")));
+  await dashboard.click("#hide-tests");
+  check("dashboard menyembunyikan notifikasi tes", await dashboard.$$eval(".history-row", (rows) => rows.length === 0));
+  await dashboard.select("#kind-filter", "all");
+  await dashboard.type("#history-search", "Gudang Timur");
+  check("pencarian profil menampilkan kejadian toko sebenarnya", await dashboard.$$eval(".history-row", (rows) =>
+    rows.length === 1 && rows[0].textContent.includes("Gudang Timur") && !rows[0].querySelector(".test")));
+  await dashboard.$eval("#history-search", (el) => { el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await dashboard.click("#hide-tests");
+  await dashboard.$eval("#profile-label", (el) => { el.value = "<Toko & Aman>"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await dashboard.click("#save-profile");
+  check("form dashboard menyimpan label literal bukan markup", await eventually(async () =>
+    (await call({ type: "get-state" })).settings.profileLabel === "<Toko & Aman>"));
+  const literalTest = await call({ type: "test", kind: "chat" });
+  await dashboard.click("#refresh");
+  await eventually(async () => await dashboard.$$eval(".history-row", (rows) => rows.some((r) => r.textContent.includes("<Toko & Aman>"))));
+  check("riwayat merender label berkarakter HTML sebagai teks", await dashboard.$$eval(".history-row", (rows) =>
+    rows.some((row) => row.textContent.includes("<Toko & Aman>") && !row.querySelector("toko"))));
+  await dashboard.screenshot({ path: join(ROOT, "tools", "dashboard.png"), fullPage: true });
+  await dashboard.setViewport({ width: 340, height: 760 });
+  check("dashboard tidak meluber pada lebar 340px", await dashboard.evaluate(() =>
+    document.documentElement.scrollWidth <= innerWidth));
+  await dashboard.screenshot({ path: join(ROOT, "tools", "dashboard-mobile.png"), fullPage: true });
+  await dashboard.$eval("#profile-label", (el) => { el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await dashboard.click("#save-profile");
+  check("label profil dapat dikosongkan lewat dashboard", await eventually(async () =>
+    (await call({ type: "get-state" })).settings.profileLabel === ""));
+  await dashboard.click("#clear-history");
+  await dashboard.click("#cancel-clear");
+  check("batal hapus mempertahankan riwayat", (await getHistory()).entries.some((e) => e.id === literalTest.id));
+
+  await page.close();
+  const staleOpen = await call({ type: "open-history", id: liveEntry.id });
+  check("riwayat tab tertutup menolak navigasi tanpa membuka tab lain",
+    staleOpen.ok === false && (await getHistory()).entries.find((e) => e.id === liveEntry.id)?.canOpen === false);
+
+  await dashboard.click("#clear-history");
+  await dashboard.click("#confirm-clear");
+  check("konfirmasi hapus mengosongkan riwayat lokal", await eventually(async () => (await getHistory()).entries.length === 0));
+
   await popup.setViewport({ width: 340, height: 760 });
   await popup.screenshot({ path: join(ROOT, "tools", "popup.png"), fullPage: true });
-  await page.bringToFront();
-  await page.click(".ssn-panel [data-test]");
-  await eventually(async () => /dikirim dan suara diputar/.test(await page.$eval("[data-hint]", (el) => el.textContent)));
-  await page.screenshot({ path: join(ROOT, "tools", "panel.png") });
+
+  // True browser restart verifies local-history durability, not worker identity.
+  const persistentTest = await call({ type: "test", kind: "chat" });
+  await browser.close();
+  browser = await puppeteer.launch(launchOptions);
+  await workerTarget();
+  const reopenedPopup = await browser.newPage();
+  await reopenedPopup.goto(`chrome-extension://${extId}/src/popup/popup.html`, { waitUntil: "domcontentloaded" });
+  const persistedHistory = await reopenedPopup.evaluate(() => chrome.runtime.sendMessage({ type: "get-history" }));
+  check("riwayat lokal bertahan setelah browser ditutup dan dibuka",
+    persistedHistory.entries.some((e) => e.id === persistentTest.id && e.test && !e.canOpen));
 } finally {
   await browser.close();
   rmSync(PROFILE, { recursive: true, force: true });

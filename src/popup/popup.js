@@ -39,6 +39,9 @@ function testStatus(res, test) {
 
 function render(state) {
   settings = state.settings;
+  const profileLabel = document.getElementById("profile-label");
+  profileLabel.hidden = !settings.profileLabel;
+  profileLabel.textContent = settings.profileLabel ? `Profil: ${settings.profileLabel}` : "";
   $("enabled").checked = settings.enabled;
   setStatus(settings.enabled
     ? `Aktif · cek tiap ${settings.pollSeconds}s`

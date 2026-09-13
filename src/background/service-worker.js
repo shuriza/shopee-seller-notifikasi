@@ -17,17 +17,94 @@ const NOTIF_PREFIX = "ssn:";
 const SESSION = Object.freeze({
   TAB_STATE: "tabState",
   NOTIFICATION_TARGETS: "notificationTargets",
+  ID: "historySessionId",
 });
 
-/** @type {Map<number, ReturnType<typeof createState> & {label: string, url: string}>} */
+/** @type {Map<number, ReturnType<typeof createState> & {label: string, url: string, trackerId: string, lastReportedAt: number}>} */
 const tabs = new Map();
-/** notificationId -> tabId, untuk fokus tab saat notifikasi diklik. */
+/** notificationId -> private target identity, untuk fokus tab saat notifikasi diklik. */
 const notifTargets = new Map();
 let settings = { ...DEFAULTS };
 let creatingOffscreen = null;
 let ready = null;
 let sessionDirty = false;
 let operationTail = Promise.resolve();
+let sessionId = "";
+
+const HISTORY_LIMIT = 200;
+
+/** @param {string | undefined} url */
+function isSellerUrl(url) {
+  return typeof url === "string" && matchPatterns().some((pattern) =>
+    pattern.endsWith("*") && url.startsWith(pattern.slice(0, -1)),
+  );
+}
+
+/** @param {unknown} raw */
+function historyEntries(raw) {
+  return Array.isArray(raw) ? raw : [];
+}
+
+/**
+ * Worker mutations are serialized. Read storage on every operation so history
+ * survives worker sleep without retaining another in-memory copy.
+ * @param {Record<string, unknown>} entry
+ */
+async function appendHistory(entry) {
+  try {
+    const stored = await chrome.storage.local.get(STORE.HISTORY);
+    const entries = historyEntries(stored[STORE.HISTORY]);
+    await chrome.storage.local.set({ [STORE.HISTORY]: [entry, ...entries].slice(0, HISTORY_LIMIT) });
+  } catch (err) {
+    // A record-keeping failure must never change delivery result of a toast.
+    console.warn("[SSN] gagal menyimpan riwayat notifikasi:", err);
+  }
+}
+
+/** @param {any} entry @param {Map<number, string>} liveSellerTabs */
+function exposeHistoryEntry(entry, liveSellerTabs) {
+  const target = entry && typeof entry === "object" ? entry : {};
+  const tabId = target.tabId;
+  const st = Number.isInteger(tabId) ? tabs.get(tabId) : undefined;
+  const canOpen = target.sessionId === sessionId
+    && Number.isInteger(tabId)
+    && liveSellerTabs.has(tabId)
+    && Boolean(st && liveSellerTabs.get(tabId) === st.url && isSellerUrl(st.url) &&
+      st.label === target.targetLabel && st.trackerId === target.trackerId);
+  return {
+    id: typeof target.id === "string" ? target.id : "",
+    at: Number.isFinite(target.at) ? target.at : 0,
+    kind: target.kind === KIND.CHAT ? KIND.CHAT : KIND.NOTIF,
+    test: Boolean(target.test),
+    label: typeof target.label === "string" ? target.label : "",
+    profileLabel: typeof target.profileLabel === "string" ? target.profileLabel : "",
+    title: typeof target.title === "string" ? target.title : "",
+    count: Number.isFinite(target.count) ? target.count : null,
+    source: target.source === "api" || target.source === "dom" || target.source === "title" ? target.source : null,
+    delivery: target.delivery === "sent" ? "sent" : "failed",
+    audio: target.audio === "played" || target.audio === "off" || target.audio === "failed" ? target.audio : null,
+    error: typeof target.error === "string" ? target.error : "",
+    canOpen,
+  };
+}
+
+/** @param {number} tabId @param {string | undefined} expectedLabel */
+async function focusTrackedSellerTab(tabId, expectedLabel) {
+  const st = tabs.get(tabId);
+  if (!st || !isSellerUrl(st.url) || (expectedLabel !== undefined && st.label !== expectedLabel)) {
+    return { ok: false, error: "Tab Seller Centre sudah tidak tersedia." };
+  }
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!isSellerUrl(tab.url)) return { ok: false, error: "Tab Seller Centre sudah tidak tersedia." };
+    if (tab.url !== st.url) return { ok: false, error: "Tab Seller Centre sudah tidak tersedia." };
+    await chrome.tabs.update(tabId, { active: true });
+    if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Tab Seller Centre sudah tidak tersedia." };
+  }
+}
 
 /**
  * Event MV3 dapat masuk bersamaan setelah worker dibangunkan. Serialisasi ini
@@ -80,7 +157,15 @@ function markSessionDirty() {
 async function persistSession() {
   if (!sessionDirty) return;
   const tabState = {};
-  for (const [tabId, st] of tabs) tabState[tabId] = { kinds: st.kinds, label: st.label, url: st.url };
+  for (const [tabId, st] of tabs) {
+    tabState[tabId] = {
+      kinds: st.kinds,
+      label: st.label,
+      url: st.url,
+      trackerId: st.trackerId,
+      lastReportedAt: st.lastReportedAt,
+    };
+  }
   const notificationTargets = Object.fromEntries(notifTargets);
   try {
     await chrome.storage.session.set({
@@ -108,13 +193,17 @@ async function restoreSession() {
         kinds: entry.kinds && typeof entry.kinds === "object" ? entry.kinds : Object.create(null),
         label: typeof entry.label === "string" ? entry.label : "",
         url: typeof entry.url === "string" ? entry.url : "",
+        trackerId: typeof entry.trackerId === "string" && entry.trackerId ? entry.trackerId : crypto.randomUUID(),
+        lastReportedAt: Number.isFinite(entry.lastReportedAt) ? entry.lastReportedAt : 0,
       });
     }
   }
   const rawTargets = stored[SESSION.NOTIFICATION_TARGETS];
   if (rawTargets && typeof rawTargets === "object") {
-    for (const [id, tabId] of Object.entries(rawTargets)) {
-      if (Number.isInteger(tabId)) notifTargets.set(id, tabId);
+    for (const [id, target] of Object.entries(rawTargets)) {
+      if (target && typeof target === "object" && Number.isInteger(target.tabId) && typeof target.trackerId === "string") {
+        notifTargets.set(id, target);
+      }
     }
   }
 }
@@ -144,8 +233,18 @@ async function pruneClosedTabs() {
 function ensureReady() {
   if (ready) return ready;
   ready = (async () => {
-    const [storedSettings] = await Promise.all([chrome.storage.local.get(STORE.SETTINGS), restoreSession()]);
+    const [storedSettings, storedSession] = await Promise.all([
+      chrome.storage.local.get(STORE.SETTINGS),
+      chrome.storage.session.get(SESSION.ID),
+      restoreSession(),
+    ]);
     settings = withDefaults(storedSettings[STORE.SETTINGS]);
+    sessionId = typeof storedSession[SESSION.ID] === "string" && storedSession[SESSION.ID]
+      ? storedSession[SESSION.ID]
+      : crypto.randomUUID();
+    if (sessionId !== storedSession[SESSION.ID]) {
+      await chrome.storage.session.set({ [SESSION.ID]: sessionId });
+    }
     await pruneClosedTabs();
     await syncAlarm();
     await persistSession();
@@ -161,7 +260,7 @@ function ensureReady() {
 function stateFor(tabId, meta) {
   let st = tabs.get(tabId);
   if (!st) {
-    st = Object.assign(createState(), { label: "", url: "" });
+    st = Object.assign(createState(), { label: "", url: "", trackerId: crypto.randomUUID(), lastReportedAt: 0 });
     tabs.set(tabId, st);
     markSessionDirty();
   }
@@ -277,26 +376,50 @@ async function playSound(kind) {
 let notifSeq = 0;
 
 /**
- * @param {{kind: "notif"|"chat", title: string, body: string, tabId?: number}} spec
+ * @param {{kind: "notif"|"chat", title: string, body: string, tabId?: number, label?: string, count?: number, source?: "api"|"dom"|"title", test?: boolean}} spec
  */
 async function pushNotification(spec) {
   const id = `${NOTIF_PREFIX}${spec.kind}:${Date.now()}:${notifSeq++}`;
+  const at = Date.now();
+  const profileLabel = settings.profileLabel;
+  const title = `${profileLabel ? `[${profileLabel}] ` : ""}${spec.title}`;
+  const target = spec.tabId === undefined ? undefined : tabs.get(spec.tabId);
+  const history = (delivery, audio = null, error = "") => appendHistory({
+    id,
+    at,
+    kind: spec.kind,
+    test: Boolean(spec.test),
+    label: typeof spec.label === "string" ? spec.label : "",
+    profileLabel,
+    title,
+    count: Number.isFinite(spec.count) ? spec.count : null,
+    source: spec.source ?? null,
+    delivery,
+    audio,
+    error,
+    sessionId: target ? sessionId : "",
+    tabId: target ? spec.tabId : null,
+    targetLabel: target?.label ?? "",
+    trackerId: target?.trackerId ?? "",
+  });
   try {
     await chrome.notifications.create(id, {
       type: "basic",
       iconUrl: chrome.runtime.getURL("assets/icons/icon128.png"),
-      title: spec.title,
+      title,
       message: spec.body,
       priority: 2,
       requireInteraction: Boolean(settings.requireInteraction),
       silent: true, // suara diputar sendiri supaya bisa beda per jenis
     });
   } catch (err) {
+    const error = String(err?.message || err);
     console.warn("[SSN] gagal membuat notifikasi:", err);
-    return { ok: false, error: String(err?.message || err) };
+    await history("failed", null, error);
+    return { ok: false, error };
   }
-  if (spec.tabId !== undefined) {
-    notifTargets.set(id, spec.tabId);
+  if (spec.tabId !== undefined && target) {
+    notifTargets.set(id, { tabId: spec.tabId, trackerId: target.trackerId });
     markSessionDirty();
     // Toast sudah dibuat. Kegagalan menyimpan target klik tidak boleh berubah
     // menjadi "gagal mengirim" atau menghentikan audio/statistik; target tetap
@@ -314,6 +437,8 @@ async function pushNotification(spec) {
     // Statistika tidak menentukan apakah notifikasi layar telah berhasil.
     console.warn("[SSN] gagal menyimpan statistik notifikasi:", err);
   }
+  const audioStatus = audio.ok ? (audio.skipped ? "off" : "played") : "failed";
+  await history("sent", audioStatus, audio.ok ? "" : audio.error);
   return { ok: true, id, audio };
 }
 
@@ -329,19 +454,13 @@ async function bumpStat(kind) {
 chrome.notifications.onClicked.addListener((id) => {
   runExclusive(async () => {
     await ensureReady();
-    const tabId = notifTargets.get(id);
+    const target = notifTargets.get(id);
     await chrome.notifications.clear(id);
     notifTargets.delete(id);
     markSessionDirty();
     await persistSession();
-    if (tabId === undefined) return;
-    try {
-      const tab = await chrome.tabs.get(tabId);
-      await chrome.tabs.update(tabId, { active: true });
-      if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
-    } catch {
-      /* tab sudah ditutup */
-    }
+    if (!target || tabs.get(target.tabId)?.trackerId !== target.trackerId) return;
+    await focusTrackedSellerTab(target.tabId);
   }).catch((err) => console.warn("[SSN] gagal menangani klik notifikasi:", err));
 });
 
@@ -370,9 +489,14 @@ function updateBadge() {
  * @param {{readings: Array<{kind: "notif"|"chat", count: number, source: "api"|"dom"|"title", detail?: string}>, hidden: boolean, url?: string, title?: string, shopName?: string}} payload
  */
 async function handleReport(tabId, payload) {
-  if (!settings.enabled) return { ok: false, reason: "disabled" };
   const st = stateFor(tabId, payload);
   const now = Date.now();
+  st.lastReportedAt = now;
+  if (!settings.enabled) {
+    markSessionDirty();
+    await persistSession();
+    return { ok: false, reason: "disabled" };
+  }
   const fired = [];
 
   // Sesuai permintaan: notifikasi hanya saat seller tidak sedang menatap tab.
@@ -391,6 +515,9 @@ async function handleReport(tabId, payload) {
       title: `${isChat ? "💬 Chat baru" : "🔔 Notifikasi baru"} — ${st.label || "Seller Centre"}`,
       body: event.detail || countText(event.prev, event.count),
       tabId,
+      label: st.label || "Seller Centre",
+      count: event.count,
+      source: event.source,
     });
     // chrome.notifications.create gagal berarti seller belum diberi tahu.
     // Rollback hanya untuk kegagalan pembuatan notifikasi, bukan kegagalan
@@ -418,7 +545,8 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
     await ensureReady();
     // Popup dibuka sebagai tab saat debugging juga punya sender.tab; halaman
     // ekstensi bukan toko dan tidak boleh masuk daftar Seller Centre.
-    const tabId = sender.url?.startsWith(chrome.runtime.getURL("")) ? undefined : sender.tab?.id;
+    const ownPage = sender.url?.startsWith(chrome.runtime.getURL(""));
+    const tabId = ownPage ? undefined : sender.tab?.id;
 
     switch (msg.type) {
       case MSG.HELLO: {
@@ -439,6 +567,8 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
           title: `${kind === KIND.CHAT ? "💬 Tes chat" : "🔔 Tes notifikasi"} — ${label || "Seller Centre"}`,
           body: "Kalau notifikasi ini muncul dan berbunyi, ekstensi bekerja normal.",
           tabId,
+          label: label || "Seller Centre",
+          test: true,
         });
         return sent;
       }
@@ -448,11 +578,13 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         return { settings };
       }
       case MSG.SET_SETTINGS: {
+        if (!ownPage) return { ok: false, error: "Akses pengaturan ditolak." };
         await saveSettings(msg.patch || {});
         updateBadge();
         return { settings };
       }
       case MSG.RESET_BASELINE: {
+        if (!ownPage) return { ok: false, error: "Akses baseline ditolak." };
         for (const st of tabs.values()) st.kinds = Object.create(null);
         markSessionDirty();
         await persistSession();
@@ -467,12 +599,47 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
             tabId: id,
             label: st.label,
             url: st.url,
+            lastReportedAt: st.lastReportedAt || 0,
             kinds: Object.fromEntries(
               Object.entries(st.kinds).map(([k, v]) => [k, { count: v.count, source: v.source, at: v.at }]),
             ),
           });
         }
         return { settings, stats: got[STORE.STATS] || { notif: 0, chat: 0, lastAt: 0 }, tabs: list };
+      }
+      case MSG.GET_HISTORY: {
+        if (!ownPage) return { ok: false, error: "Akses riwayat ditolak." };
+        const [stored, live] = await Promise.all([
+          chrome.storage.local.get(STORE.HISTORY),
+          chrome.tabs.query({ url: matchPatterns() }),
+        ]);
+        const liveSellerTabs = new Map(live.filter((tab) => Number.isInteger(tab.id)).map((tab) => [tab.id, tab.url]));
+        return {
+          ok: true,
+          entries: historyEntries(stored[STORE.HISTORY]).slice(0, HISTORY_LIMIT)
+            .map((entry) => exposeHistoryEntry(entry, liveSellerTabs)),
+          limit: HISTORY_LIMIT,
+        };
+      }
+      case MSG.CLEAR_HISTORY: {
+        if (!ownPage) return { ok: false, error: "Akses riwayat ditolak." };
+        await chrome.storage.local.remove(STORE.HISTORY);
+        return { ok: true };
+      }
+      case MSG.OPEN_HISTORY: {
+        if (!ownPage) return { ok: false, error: "Akses riwayat ditolak." };
+        const stored = await chrome.storage.local.get(STORE.HISTORY);
+        const entry = historyEntries(stored[STORE.HISTORY]).find((item) => item?.id === msg.id);
+        if (!entry || entry.sessionId !== sessionId || !Number.isInteger(entry.tabId)) {
+          return { ok: false, error: "Tab asal sudah tidak tersedia." };
+        }
+        const st = tabs.get(entry.tabId);
+        if (!st || st.trackerId !== entry.trackerId) return { ok: false, error: "Tab asal sudah tidak tersedia." };
+        return focusTrackedSellerTab(entry.tabId, entry.targetLabel);
+      }
+      case MSG.OPEN_TAB: {
+        if (!ownPage || !Number.isInteger(msg.tabId)) return { ok: false, error: "Akses tab ditolak." };
+        return focusTrackedSellerTab(msg.tabId);
       }
       default:
         return { ok: false, reason: "unknown-type" };

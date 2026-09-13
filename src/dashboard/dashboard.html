@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Riwayat Pemantauan — Seller Notifier</title>
+    <link rel="stylesheet" href="dashboard.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Seller Notifier</p>
+          <h1>Riwayat &amp; pemantauan</h1>
+          <p class="lede">Data disimpan lokal di profil browser ini. Halaman ini tidak memeriksa status login Shopee.</p>
+        </div>
+        <button class="button button-secondary" id="refresh" type="button">Muat ulang</button>
+      </header>
+
+      <p class="status" id="status" role="status" aria-live="polite" aria-atomic="true">Memuat data…</p>
+
+      <section class="card profile-card" aria-labelledby="profile-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="profile-heading">Label profil</h2>
+            <p>Hanya untuk profil browser ini. Kosongkan untuk kembali memakai nama toko otomatis.</p>
+          </div>
+        </div>
+        <form class="profile-form" id="profile-form">
+          <label for="profile-label">Label yang tampil di notifikasi dan riwayat</label>
+          <div class="form-row">
+            <input id="profile-label" name="profileLabel" type="text" maxlength="48" autocomplete="off" placeholder="Contoh: Toko Utama" />
+            <button class="button button-primary" id="save-profile" type="submit">Simpan label</button>
+          </div>
+          <p class="field-note" id="profile-note">Maksimal 48 karakter.</p>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="tabs-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="tabs-heading">Tab Seller Centre terpantau <span class="count-pill" id="tab-count">0</span></h2>
+            <p>Jumlah terakhir yang dilaporkan oleh tiap tab; ini bukan penanda kesehatan atau login.</p>
+          </div>
+        </div>
+        <div class="tab-list" id="tab-list" aria-live="polite"></div>
+      </section>
+
+      <section class="card history-card" aria-labelledby="history-heading">
+        <div class="section-heading history-heading">
+          <div>
+            <h2 id="history-heading">Riwayat notifikasi</h2>
+            <p>Menyimpan hingga 200 kejadian terbaru di penyimpanan lokal.</p>
+          </div>
+          <button class="button button-danger" id="clear-history" type="button">Hapus riwayat</button>
+        </div>
+
+        <div class="confirm-box" id="clear-confirmation" hidden role="alert">
+          <p>Hapus seluruh riwayat notifikasi lokal? Pengaturan, statistik, dan baseline tidak diubah.</p>
+          <div class="confirm-actions">
+            <button class="button button-secondary" id="cancel-clear" type="button">Batal</button>
+            <button class="button button-danger" id="confirm-clear" type="button">Ya, hapus riwayat</button>
+          </div>
+        </div>
+
+        <div class="filters" aria-label="Filter riwayat">
+          <label>
+            <span>Jenis</span>
+            <select id="kind-filter">
+              <option value="all">Semua</option>
+              <option value="notif">Notifikasi</option>
+              <option value="chat">Chat</option>
+            </select>
+          </label>
+          <label class="search-field">
+            <span>Cari toko atau profil</span>
+            <input id="history-search" type="search" autocomplete="off" placeholder="Cari label…" />
+          </label>
+          <label class="check-label"><input id="hide-tests" type="checkbox" /> <span>Sembunyikan tes</span></label>
+        </div>
+
+        <div id="history-error" class="inline-error" role="alert" hidden></div>
+        <div class="history-list" id="history-list" aria-live="polite"></div>
+      </section>
+    </main>
+    <script src="dashboard.js" type="module"></script>
+  </body>
+</html>

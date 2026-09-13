@@ -23,6 +23,25 @@ sudah diterima halaman. Ini tidak memaksa server Shopee atau tab yang dibekukan 
 4. Biarkan tab Seller Centre tetap terbuka dan login. Akun yang berbeda biasanya membutuhkan profil
    Chrome terpisah; pasang ekstensi di setiap profil tersebut. Dua tab dalam profil sama berbagi sesi.
 5. **⏸ Matikan Monitor** di panel atau toggle di popup untuk menjeda sementara.
+6. Klik **Buka riwayat & pemantauan** di popup untuk membuka dashboard pada tab baru.
+   Isi **Label profil** (misalnya `Toko Sepatu — Chrome A`), lalu **Simpan label**. Label ditambahkan
+   di depan judul notifikasi profil ini; nama toko otomatis tetap tampil. Kosongkan untuk menghapus.
+
+## Riwayat dan monitoring lokal (1.2.0)
+
+- Dashboard menampilkan tab Seller Centre dalam **profil browser ini**, jumlah notifikasi/chat,
+  sumber hitungan, dan waktu laporan terakhir. Ini bukan pemeriksaan login atau kesehatan koneksi.
+- Maksimal **200 percobaan notifikasi terbaru** disimpan lokal: termasuk tes, toast gagal, dan hasil
+  audio. Baseline, hitungan tetap, serta perubahan yang ditekan pengaturan tidak menambah riwayat.
+- Filter berdasarkan jenis, cari nama toko/label profil, atau sembunyikan notifikasi tes.
+- **Buka asal** memfokuskan tab dan jendela sumber yang masih tersedia. Setelah browser berganti
+  sesi, tab ditutup, atau identitas target tidak cocok, tombol tidak membuka ulang URL lama.
+- Riwayat bertahan setelah browser ditutup dan dibuka; label pada entri lama tidak ikut berubah
+  ketika label profil diedit. **Hapus riwayat** memerlukan konfirmasi dan tidak menghapus pengaturan,
+  statistik terkirim, atau baseline.
+
+Ini **bukan dashboard gabungan lintas profil**. Tetap pasang ekstensi dan login pada setiap profil;
+label manual membantu membedakan notifikasi desktop dari profil-profil tersebut.
 
 ## Cara kerja deteksi
 
@@ -73,6 +92,9 @@ berikutnya dapat mencoba mengirimnya lagi.
 Privasi: tidak ada server ekstensi atau pengiriman data ke pihak ketiga. Halaman Shopee tetap memakai
 jaringannya sendiri. Hook membaca respons halaman secara lokal; laporan yang diteruskan ke worker
 berisi hitungan, metadata halaman, dan nama toko. Tidak ada replay request atau penyimpanan password.
+Riwayat di `chrome.storage.local` menyimpan waktu, jenis, label, judul, hitungan/sumber, hasil kirim,
+hasil audio, error API, dan identitas target sesi internal. Tidak menyimpan URL halaman, body chat,
+cookie, atau payload API mentah. Menghapus ekstensi juga menghapus penyimpanan lokalnya.
 
 ## Struktur
 
@@ -85,8 +107,9 @@ src/offscreen/                pemutar audio WebAudio
 src/content/hook.js           dunia MAIN: sniff fetch/XHR/WebSocket
 src/content/monitor.js        probe DOM/title dan panel kontrol; tanpa keep-alive port
 src/popup/                    pengaturan lengkap
+src/dashboard/                label profil, daftar tab, filter dan riwayat lokal
 tools/gen-assets.mjs          generator ikon PNG + suara WAV (tanpa binary blob)
-tools/smoke-detect.mjs        33 assert logika deteksi (tanpa browser)
+tools/smoke-detect.mjs        logika deteksi dan normalisasi label (tanpa browser)
 tools/fixture/                Seller Centre palsu (HTTPS) untuk e2e
 tools/e2e.mjs                 Chrome sungguhan + ekstensi ter-load
 tools/pack.mjs                bundel zip untuk Web Store
@@ -111,7 +134,7 @@ Chrome 137+ mencabut `--load-extension`, jadi e2e memakai opsi `enableExtensions
 
 ## Status verifikasi
 
-Rilis 1.1.0: **33 pemeriksaan logika** dan **19 pemeriksaan browser** pada Chrome 152 / Windows 11.
+Rilis 1.2.0: **35 pemeriksaan logika** dan **35 pemeriksaan browser** pada Chrome 152 / Windows 11.
 Browser memakai fixture HTTPS lokal, bukan akun Shopee produksi. Cakupannya:
 
 - toast diterima API Chrome; respons sukses audio notif dan chat diterima dari offscreen;
@@ -120,12 +143,24 @@ Browser memakai fixture HTTPS lokal, bukan akun Shopee produksi. Cakupannya:
 - kenaikan badge background menghasilkan push, hitungan sama tidak mengulangnya;
 - tab terlihat tidak diberi toast; dua perubahan pengaturan bersamaan sama-sama tersimpan;
 - popup/panel menampilkan hasil pengiriman, dan halaman ekstensi tidak terdaftar sebagai toko.
+- riwayat mencatat percobaan gagal/berhasil dan label historis tanpa mengubah statistik ketika gagal;
+- batas 200 entri, penghapusan tanpa mengubah baseline, penolakan sesi lama dan tab tertutup;
+- dashboard dibuka lewat popup, filter/pencarian/label literal, konfirmasi batal/hapus;
+- layout desktop dan 340px, serta riwayat tetap tersedia setelah browser benar-benar ditutup/dibuka.
 
 **Batas bukti:** `Runtime.terminateExecution` di harness hanya membuktikan bahwa pesan dan hitungan
 tetap bekerja setelah command tersebut. Itu bukan bukti worker baru dibuat atau state dipulihkan
 dari storage. Cold-start worker penuh dan klik toast OS sesudah restart belum terverifikasi otomatis.
 Audio diverifikasi lewat penyelesaian WebAudio, bukan rekaman speaker; toast OS dapat dipengaruhi
 pengaturan Windows. Struktur DOM/API dan nama toko Shopee nyata masih perlu diuji dengan sesi seller.
+
+## Perubahan 1.2.0
+
+- Label profil manual (maksimal 48 karakter) sebagai awalan toast, disimpan per profil.
+- Dashboard responsif dan riwayat lokal maksimum 200 entri, termasuk tes dan kegagalan kirim/audio.
+- Status hitungan dan laporan terakhir per tab; pemfokusan tab sumber dari riwayat.
+- Identitas sesi/tracker diperiksa sebelum navigasi; entry dari sesi lama tidak membuka ID tab daur ulang.
+- Riwayat dapat dihapus tanpa menghapus pengaturan, statistik, atau baseline; izin ekstensi tidak bertambah.
 
 ## Perubahan 1.1.0
 

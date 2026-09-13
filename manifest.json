@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Shopee Seller Notifier — Push Notifikasi Pesanan & Chat",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Push notifikasi real-time untuk Shopee Seller Center: pesanan baru & chat terdeteksi walau tab tidak aktif. Suara berbeda untuk chat dan notifikasi.",
   "minimum_chrome_version": "120",
   "icons": {
