@@ -1,0 +1,115 @@
+{
+  "manifest_version": 3,
+  "name": "Shopee Seller Notifier — Push Notifikasi Pesanan & Chat",
+  "version": "1.0.0",
+  "description": "Push notifikasi real-time untuk Shopee Seller Center: pesanan baru & chat terdeteksi walau tab tidak aktif. Suara berbeda untuk chat dan notifikasi.",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "32": "assets/icons/icon32.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  },
+  "permissions": ["storage", "notifications", "alarms", "offscreen", "tabs"],
+  "host_permissions": [
+    "https://seller.shopee.co.id/*",
+    "https://seller.shopee.com/*",
+    "https://seller.shopee.sg/*",
+    "https://seller.shopee.com.my/*",
+    "https://seller.shopee.co.th/*",
+    "https://seller.shopee.vn/*",
+    "https://seller.shopee.ph/*",
+    "https://seller.shopee.com.br/*",
+    "https://seller.shopee.tw/*",
+    "https://seller.shopee.com.mx/*",
+    "https://seller.shopee.com.co/*",
+    "https://seller.shopee.cl/*",
+    "https://seller.shopee.pl/*",
+    "https://seller.shopee.es/*",
+    "https://seller.shopee.fr/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "Shopee Seller Notifier",
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "32": "assets/icons/icon32.png",
+      "48": "assets/icons/icon48.png",
+      "128": "assets/icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://seller.shopee.co.id/*",
+        "https://seller.shopee.com/*",
+        "https://seller.shopee.sg/*",
+        "https://seller.shopee.com.my/*",
+        "https://seller.shopee.co.th/*",
+        "https://seller.shopee.vn/*",
+        "https://seller.shopee.ph/*",
+        "https://seller.shopee.com.br/*",
+        "https://seller.shopee.tw/*",
+        "https://seller.shopee.com.mx/*",
+        "https://seller.shopee.com.co/*",
+        "https://seller.shopee.cl/*",
+        "https://seller.shopee.pl/*",
+        "https://seller.shopee.es/*",
+        "https://seller.shopee.fr/*"
+      ],
+      "js": ["src/content/hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://seller.shopee.co.id/*",
+        "https://seller.shopee.com/*",
+        "https://seller.shopee.sg/*",
+        "https://seller.shopee.com.my/*",
+        "https://seller.shopee.co.th/*",
+        "https://seller.shopee.vn/*",
+        "https://seller.shopee.ph/*",
+        "https://seller.shopee.com.br/*",
+        "https://seller.shopee.tw/*",
+        "https://seller.shopee.com.mx/*",
+        "https://seller.shopee.com.co/*",
+        "https://seller.shopee.cl/*",
+        "https://seller.shopee.pl/*",
+        "https://seller.shopee.es/*",
+        "https://seller.shopee.fr/*"
+      ],
+      "js": ["src/content/monitor.js"],
+      "css": ["src/content/panel.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/sounds/*", "assets/icons/*"],
+      "matches": [
+        "https://seller.shopee.co.id/*",
+        "https://seller.shopee.com/*",
+        "https://seller.shopee.sg/*",
+        "https://seller.shopee.com.my/*",
+        "https://seller.shopee.co.th/*",
+        "https://seller.shopee.vn/*",
+        "https://seller.shopee.ph/*",
+        "https://seller.shopee.com.br/*",
+        "https://seller.shopee.tw/*",
+        "https://seller.shopee.com.mx/*",
+        "https://seller.shopee.com.co/*",
+        "https://seller.shopee.cl/*",
+        "https://seller.shopee.pl/*",
+        "https://seller.shopee.es/*",
+        "https://seller.shopee.fr/*"
+      ]
+    }
+  ]
+}

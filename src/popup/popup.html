@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <title>Shopee Seller Notifier</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="head">
+      <img src="../../assets/icons/icon48.png" alt="" width="28" height="28" />
+      <div>
+        <h1>Seller Notifier</h1>
+        <p class="sub" id="status">memuat…</p>
+      </div>
+      <label class="switch" title="Nyalakan / matikan monitor">
+        <input type="checkbox" id="enabled" />
+        <span class="slider"></span>
+      </label>
+    </header>
+
+    <section class="card">
+      <button class="btn btn-primary" id="test-notif">🔔 Kirim Notifikasi Tes</button>
+      <button class="btn" id="test-chat">💬 Tes Suara Chat</button>
+    </section>
+
+    <section class="card">
+      <h2>Jenis notifikasi</h2>
+      <label class="row"><input type="checkbox" id="notifyOrders" /><span>Notifikasi / pesanan baru</span></label>
+      <label class="row"><input type="checkbox" id="notifyChats" /><span>Chat pembeli</span></label>
+      <label class="row"
+        ><input type="checkbox" id="onlyWhenHidden" /><span>Hanya saat tab tidak aktif</span></label
+      >
+      <label class="row"
+        ><input type="checkbox" id="onlyOnIncrease" /><span>Hanya saat jumlah bertambah</span></label
+      >
+      <label class="row"
+        ><input type="checkbox" id="requireInteraction" /><span>Notifikasi menetap sampai diklik</span></label
+      >
+    </section>
+
+    <section class="card">
+      <h2>Suara</h2>
+      <label class="row"><input type="checkbox" id="soundEnabled" /><span>Bunyikan suara</span></label>
+      <label class="range"
+        ><span>Volume <b id="volume-val">80%</b></span>
+        <input type="range" id="volume" min="0" max="100" step="5" />
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>Pemeriksaan latar</h2>
+      <label class="range"
+        ><span>Interval <b id="poll-val">30s</b></span>
+        <input type="range" id="pollSeconds" min="30" max="300" step="15" />
+      </label>
+      <label class="range"
+        ><span>Jeda anti-spam <b id="cool-val">5s</b></span>
+        <input type="range" id="cooldownSeconds" min="0" max="120" step="5" />
+      </label>
+      <label class="row"><input type="checkbox" id="showPanel" /><span>Tampilkan panel di halaman</span></label>
+    </section>
+
+    <section class="card">
+      <h2>Toko terpantau <span class="pill" id="tab-count">0</span></h2>
+      <ul class="tabs" id="tabs"></ul>
+      <button class="btn btn-quiet" id="reset">Setel ulang baseline</button>
+    </section>
+
+    <footer class="foot">
+      <span id="stats">—</span>
+      <span class="hint">Biarkan tab Seller Centre tetap terbuka.</span>
+    </footer>
+
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

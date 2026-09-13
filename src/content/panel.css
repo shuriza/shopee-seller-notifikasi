@@ -1,0 +1,100 @@
+.ssn-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483000;
+  width: 232px;
+  padding: 10px 12px 8px;
+  box-sizing: border-box;
+  background: #fff;
+  color: #222;
+  border: 1px solid #ececec;
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.14);
+  font: 12px/1.45 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+.ssn-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.ssn-title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ee4d2d;
+}
+
+.ssn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.16);
+  flex: none;
+}
+
+.ssn-dot-off {
+  background: #9aa0a6;
+  box-shadow: 0 0 0 3px rgba(154, 160, 166, 0.18);
+}
+
+.ssn-x {
+  border: 0;
+  background: transparent;
+  color: #888;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.ssn-x:hover {
+  color: #222;
+}
+
+.ssn-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ssn-btn {
+  display: block;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fafafa;
+  color: #333;
+  font: inherit;
+  cursor: pointer;
+  text-align: center;
+}
+
+.ssn-btn:hover {
+  border-color: #ee4d2d;
+  color: #ee4d2d;
+}
+
+.ssn-btn-primary {
+  background: #ee4d2d;
+  border-color: #ee4d2d;
+  color: #fff;
+  font-weight: 600;
+}
+
+.ssn-btn-primary:hover {
+  background: #d8431f;
+  color: #fff;
+}
+
+.ssn-hint {
+  min-height: 14px;
+  margin-top: 6px;
+  color: #666;
+  font-size: 11px;
+}
