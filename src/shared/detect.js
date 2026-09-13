@@ -139,6 +139,27 @@ export function applyReading(state, reading, opts, now) {
 }
 
 /**
+ * Mengembalikan state kind sebelum applyReading. Dipakai hanya ketika Chrome
+ * menolak membuat notifikasi: event belum pernah sampai ke seller, jadi count
+ * itu harus dapat dicoba lagi pada probe berikutnya, bukan tenggelam sebagai
+ * "unchanged". Snapshot sengaja salin dangkal karena `proven` bisa dimutasi.
+ *
+ * @param {{kinds: Record<string, KindState>}} state
+ * @param {Kind} kind
+ * @param {KindState | undefined} previous
+ */
+export function restoreReading(state, kind, previous) {
+  if (!previous) {
+    delete state.kinds[kind];
+    return;
+  }
+  state.kinds[kind] = {
+    ...previous,
+    proven: { ...(previous.proven || {}) },
+  };
+}
+
+/**
  * Buang pembacaan yang tidak masuk akal (NaN, negatif, angka tak wajar besar).
  * @param {unknown} v
  * @returns {number | null}

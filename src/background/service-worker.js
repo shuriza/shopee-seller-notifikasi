@@ -1,5 +1,5 @@
 import { DEFAULTS, KIND, MSG, STORE, countText, shopLabel, withDefaults } from "../shared/common.js";
-import { applyReading, createState, totalUnread } from "../shared/detect.js";
+import { applyReading, createState, restoreReading, totalUnread } from "../shared/detect.js";
 
 /**
  * Service worker: pemilik semua keputusan.
@@ -14,21 +14,36 @@ import { applyReading, createState, totalUnread } from "../shared/detect.js";
 const ALARM_POLL = "poll";
 const OFFSCREEN_PATH = "src/offscreen/offscreen.html";
 const NOTIF_PREFIX = "ssn:";
+const SESSION = Object.freeze({
+  TAB_STATE: "tabState",
+  NOTIFICATION_TARGETS: "notificationTargets",
+});
 
 /** @type {Map<number, ReturnType<typeof createState> & {label: string, url: string}>} */
 const tabs = new Map();
 /** notificationId -> tabId, untuk fokus tab saat notifikasi diklik. */
 const notifTargets = new Map();
 let settings = { ...DEFAULTS };
-let offscreenReady = null;
+let creatingOffscreen = null;
+let ready = null;
+let sessionDirty = false;
+let operationTail = Promise.resolve();
+
+/**
+ * Event MV3 dapat masuk bersamaan setelah worker dibangunkan. Serialisasi ini
+ * mencegah dua REPORT membaca baseline yang sama atau dua SET_SETTINGS saling
+ * menimpa perubahan. Error satu event tidak merusak antrean event berikutnya.
+ * @template T
+ * @param {() => Promise<T>} work
+ * @returns {Promise<T>}
+ */
+function runExclusive(work) {
+  const result = operationTail.then(work, work);
+  operationTail = result.catch((err) => console.warn("[SSN] operasi worker gagal:", err));
+  return result;
+}
 
 /* ------------------------------------------------------------- settings ---- */
-
-async function loadSettings() {
-  const got = await chrome.storage.local.get(STORE.SETTINGS);
-  settings = withDefaults(got[STORE.SETTINGS]);
-  return settings;
-}
 
 /** @param {Record<string, unknown>} patch */
 async function saveSettings(patch) {
@@ -45,34 +60,101 @@ function broadcastSettings() {
 
 /** @param {number} tabId @param {any} msg */
 function send(tabId, msg) {
-  chrome.tabs.sendMessage(tabId, msg).catch(() => tabs.delete(tabId));
+  // Reload/navigasi membuat content script sebentar tidak tersedia. Itu bukan
+  // bukti tab ditutup; menghapus state di sini akan mengulang baseline dan
+  // berisiko menggandakan notifikasi setelah script hidup lagi.
+  chrome.tabs.sendMessage(tabId, msg).catch(() => {});
 }
 
 /* ---------------------------------------------------------------- state ---- */
 
-const SESSION_KEY = "tabState";
+function markSessionDirty() {
+  sessionDirty = true;
+}
 
-async function rehydrate() {
-  if (tabs.size) return;
-  const got = await chrome.storage.session.get(SESSION_KEY);
-  const raw = got[SESSION_KEY];
-  if (!raw) return;
-  for (const [id, entry] of Object.entries(raw)) {
-    const tabId = Number(id);
-    if (!Number.isFinite(tabId)) continue;
-    tabs.set(tabId, { kinds: entry.kinds || Object.create(null), label: entry.label || "", url: entry.url || "" });
+/**
+ * Global service-worker dapat hilang 30 detik setelah idle. Jangan debounce
+ * state yang menjadi dasar dedupe: simpan sebelum event selesai agar wake-up
+ * berikutnya tidak menilai hitungan lama sebagai notifikasi baru.
+ */
+async function persistSession() {
+  if (!sessionDirty) return;
+  const tabState = {};
+  for (const [tabId, st] of tabs) tabState[tabId] = { kinds: st.kinds, label: st.label, url: st.url };
+  const notificationTargets = Object.fromEntries(notifTargets);
+  try {
+    await chrome.storage.session.set({
+      [SESSION.TAB_STATE]: tabState,
+      [SESSION.NOTIFICATION_TARGETS]: notificationTargets,
+    });
+    sessionDirty = false;
+  } catch (err) {
+    // Tetap dirty agar event berikutnya mencoba menyimpan lagi; jangan membuat
+    // state in-memory tampak sudah aman padahal gagal dipersistenkan.
+    sessionDirty = true;
+    throw err;
   }
 }
 
-let persistTimer = null;
-function persistSoon() {
-  if (persistTimer) return;
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
-    const dump = {};
-    for (const [tabId, st] of tabs) dump[tabId] = { kinds: st.kinds, label: st.label, url: st.url };
-    chrome.storage.session.set({ [SESSION_KEY]: dump }).catch(() => {});
-  }, 250);
+/** Memulihkan state sekali per kelahiran worker. */
+async function restoreSession() {
+  const stored = await chrome.storage.session.get([SESSION.TAB_STATE, SESSION.NOTIFICATION_TARGETS]);
+  const rawTabs = stored[SESSION.TAB_STATE];
+  if (rawTabs && typeof rawTabs === "object") {
+    for (const [id, entry] of Object.entries(rawTabs)) {
+      const tabId = Number(id);
+      if (!Number.isInteger(tabId) || !entry || typeof entry !== "object") continue;
+      tabs.set(tabId, {
+        kinds: entry.kinds && typeof entry.kinds === "object" ? entry.kinds : Object.create(null),
+        label: typeof entry.label === "string" ? entry.label : "",
+        url: typeof entry.url === "string" ? entry.url : "",
+      });
+    }
+  }
+  const rawTargets = stored[SESSION.NOTIFICATION_TARGETS];
+  if (rawTargets && typeof rawTargets === "object") {
+    for (const [id, tabId] of Object.entries(rawTargets)) {
+      if (Number.isInteger(tabId)) notifTargets.set(id, tabId);
+    }
+  }
+}
+
+/** Hapus session state untuk tab yang sudah benar-benar tidak ada. */
+async function pruneClosedTabs() {
+  const live = await chrome.tabs.query({ url: matchPatterns() });
+  const liveIds = new Set(live.map((tab) => tab.id).filter(Number.isInteger));
+  let changed = false;
+  for (const tabId of tabs.keys()) {
+    if (!liveIds.has(tabId)) {
+      tabs.delete(tabId);
+      changed = true;
+    }
+  }
+  if (changed) {
+    markSessionDirty();
+    updateBadge();
+  }
+  return live;
+}
+
+/**
+ * Satu barrier bootstrap. Semua event menunggunya sebelum menyentuh state,
+ * sehingga restore storage tidak balapan dengan HELLO/REPORT pertama.
+ */
+function ensureReady() {
+  if (ready) return ready;
+  ready = (async () => {
+    const [storedSettings] = await Promise.all([chrome.storage.local.get(STORE.SETTINGS), restoreSession()]);
+    settings = withDefaults(storedSettings[STORE.SETTINGS]);
+    await pruneClosedTabs();
+    await syncAlarm();
+    await persistSession();
+    updateBadge();
+  })().catch((err) => {
+    ready = null;
+    throw err;
+  });
+  return ready;
 }
 
 /** @param {number} tabId @param {{url?: string, shopName?: string}} meta */
@@ -81,10 +163,21 @@ function stateFor(tabId, meta) {
   if (!st) {
     st = Object.assign(createState(), { label: "", url: "" });
     tabs.set(tabId, st);
+    markSessionDirty();
   }
   if (meta) {
-    if (meta.url) st.url = meta.url;
-    st.label = shopLabel({ url: meta.url || st.url, shopName: meta.shopName, tabId });
+    if (meta.url && meta.url !== st.url) {
+      st.url = meta.url;
+      markSessionDirty();
+    }
+    // HELLO/probe awal sering belum punya nama toko. Jangan timpa nama yang
+    // sudah benar dengan fallback domain atau judul halaman saat itu terjadi.
+    const suppliedName = typeof meta.shopName === "string" ? meta.shopName.trim() : "";
+    const label = suppliedName || st.label || shopLabel({ url: st.url, tabId });
+    if (label !== st.label) {
+      st.label = label;
+      markSessionDirty();
+    }
   }
   return st;
 }
@@ -105,16 +198,13 @@ async function syncAlarm() {
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== ALARM_POLL) return;
-  await loadSettings();
-  await rehydrate();
-  if (!settings.enabled) return;
-  // Tab yang sudah tertutup dibersihkan agar state tidak menumpuk.
-  const live = await chrome.tabs.query({ url: matchPatterns() });
-  const liveIds = new Set(live.map((t) => t.id));
-  for (const tabId of [...tabs.keys()]) if (!liveIds.has(tabId)) tabs.delete(tabId);
-  for (const tab of live) if (tab.id !== undefined) send(tab.id, { type: MSG.PROBE_NOW });
-  updateBadge();
-  persistSoon();
+  await runExclusive(async () => {
+    await ensureReady();
+    if (!settings.enabled) return;
+    const live = await pruneClosedTabs();
+    for (const tab of live) if (tab.id !== undefined) send(tab.id, { type: MSG.PROBE_NOW });
+    await persistSession();
+  });
 });
 
 function matchPatterns() {
@@ -123,10 +213,25 @@ function matchPatterns() {
 
 /* ---------------------------------------------------------------- audio ---- */
 
+async function hasOffscreenDocument() {
+  const url = chrome.runtime.getURL(OFFSCREEN_PATH);
+  // getContexts tersedia sejak Chrome 116; hasDocument baru Chrome 150.
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [url],
+  });
+  return contexts.length > 0;
+}
+
 async function ensureOffscreen() {
-  if (offscreenReady) return offscreenReady;
-  offscreenReady = (async () => {
-    const has = await chrome.offscreen.hasDocument?.();
+  // AUDIO_PLAYBACK boleh ditutup Chrome setelah 30s sunyi. Promise global yang
+  // permanen akan mengira dokumen lama masih ada lalu pesan audio hilang.
+  const exists = await hasOffscreenDocument();
+  if (exists) return;
+  if (creatingOffscreen) return creatingOffscreen;
+
+  creatingOffscreen = (async () => {
+    const has = await hasOffscreenDocument();
     if (!has) {
       try {
         await chrome.offscreen.createDocument({
@@ -141,27 +246,29 @@ async function ensureOffscreen() {
     }
   })();
   try {
-    await offscreenReady;
-  } catch (err) {
-    offscreenReady = null;
-    throw err;
+    await creatingOffscreen;
+  } finally {
+    creatingOffscreen = null;
   }
-  return offscreenReady;
 }
 
 /** @param {"notif"|"chat"} kind */
 async function playSound(kind) {
-  if (!settings.soundEnabled || settings.volume <= 0) return;
+  if (!settings.soundEnabled || settings.volume <= 0) return { ok: true, skipped: true };
   try {
     await ensureOffscreen();
-    await chrome.runtime.sendMessage({
+    const result = await chrome.runtime.sendMessage({
       target: "offscreen",
       type: MSG.PLAY,
       kind,
       volume: settings.volume,
     });
+    if (!result?.ok) throw new Error(result?.error || "Pemutar suara tidak merespons.");
+    return { ok: true };
   } catch (err) {
-    console.warn("[SSN] gagal memutar suara:", err);
+    const error = String(err?.message || err);
+    console.warn("[SSN] gagal memutar suara:", error);
+    return { ok: false, error };
   }
 }
 
@@ -174,7 +281,6 @@ let notifSeq = 0;
  */
 async function pushNotification(spec) {
   const id = `${NOTIF_PREFIX}${spec.kind}:${Date.now()}:${notifSeq++}`;
-  if (spec.tabId !== undefined) notifTargets.set(id, spec.tabId);
   try {
     await chrome.notifications.create(id, {
       type: "basic",
@@ -187,11 +293,28 @@ async function pushNotification(spec) {
     });
   } catch (err) {
     console.warn("[SSN] gagal membuat notifikasi:", err);
-    notifTargets.delete(id);
-    return;
+    return { ok: false, error: String(err?.message || err) };
   }
-  await playSound(spec.kind);
-  await bumpStat(spec.kind);
+  if (spec.tabId !== undefined) {
+    notifTargets.set(id, spec.tabId);
+    markSessionDirty();
+    // Toast sudah dibuat. Kegagalan menyimpan target klik tidak boleh berubah
+    // menjadi "gagal mengirim" atau menghentikan audio/statistik; target tetap
+    // ada di memori dan akan dicoba simpan pada event berikutnya.
+    try {
+      await persistSession();
+    } catch (err) {
+      console.warn("[SSN] target klik belum tersimpan:", err);
+    }
+  }
+  const audio = await playSound(spec.kind);
+  try {
+    await bumpStat(spec.kind);
+  } catch (err) {
+    // Statistika tidak menentukan apakah notifikasi layar telah berhasil.
+    console.warn("[SSN] gagal menyimpan statistik notifikasi:", err);
+  }
+  return { ok: true, id, audio };
 }
 
 /** @param {"notif"|"chat"} kind */
@@ -203,21 +326,33 @@ async function bumpStat(kind) {
   await chrome.storage.local.set({ [STORE.STATS]: stats });
 }
 
-chrome.notifications.onClicked.addListener(async (id) => {
-  const tabId = notifTargets.get(id);
-  chrome.notifications.clear(id);
-  notifTargets.delete(id);
-  if (tabId === undefined) return;
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    await chrome.tabs.update(tabId, { active: true });
-    if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
-  } catch {
-    /* tab sudah ditutup */
-  }
+chrome.notifications.onClicked.addListener((id) => {
+  runExclusive(async () => {
+    await ensureReady();
+    const tabId = notifTargets.get(id);
+    await chrome.notifications.clear(id);
+    notifTargets.delete(id);
+    markSessionDirty();
+    await persistSession();
+    if (tabId === undefined) return;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      await chrome.tabs.update(tabId, { active: true });
+      if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+    } catch {
+      /* tab sudah ditutup */
+    }
+  }).catch((err) => console.warn("[SSN] gagal menangani klik notifikasi:", err));
 });
 
-chrome.notifications.onClosed.addListener((id) => notifTargets.delete(id));
+chrome.notifications.onClosed.addListener((id) => {
+  runExclusive(async () => {
+    await ensureReady();
+    if (!notifTargets.delete(id)) return;
+    markSessionDirty();
+    await persistSession();
+  }).catch((err) => console.warn("[SSN] gagal menyimpan penutupan notifikasi:", err));
+});
 
 /* ---------------------------------------------------------------- badge ---- */
 
@@ -245,20 +380,31 @@ async function handleReport(tabId, payload) {
   const opts = { ...settings, suppress };
 
   for (const reading of payload.readings || []) {
+    const before = st.kinds[reading.kind]
+      ? { ...st.kinds[reading.kind], proven: { ...(st.kinds[reading.kind].proven || {}) } }
+      : undefined;
     const { event, reason } = applyReading(st, reading, opts, now);
     if (!event) continue;
     const isChat = event.kind === KIND.CHAT;
-    await pushNotification({
+    const sent = await pushNotification({
       kind: event.kind,
       title: `${isChat ? "💬 Chat baru" : "🔔 Notifikasi baru"} — ${st.label || "Seller Centre"}`,
       body: event.detail || countText(event.prev, event.count),
       tabId,
     });
-    fired.push({ kind: event.kind, reason });
+    // chrome.notifications.create gagal berarti seller belum diberi tahu.
+    // Rollback hanya untuk kegagalan pembuatan notifikasi, bukan kegagalan
+    // audio—toast sudah tampil pada kasus audio gagal dan tidak boleh diulang.
+    if (!sent.ok) restoreReading(st, event.kind, before);
+    fired.push({ kind: event.kind, reason, sent });
   }
 
+  // applyReading memutasi baseline/count meski tidak ada push (mis. tab sedang
+  // terlihat atau count turun). Semua mutasi harus bertahan lintas worker idle,
+  // atau wake-up berikutnya bisa mengirim duplikat.
+  markSessionDirty();
   updateBadge();
-  persistSoon();
+  await persistSession();
   return { ok: true, fired };
 }
 
@@ -268,15 +414,16 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
   if (!msg || typeof msg !== "object") return;
   if (msg.target === "offscreen") return; // bukan untuk kita
 
-  (async () => {
-    await loadSettings();
-    await rehydrate();
-    const tabId = sender.tab?.id;
+  runExclusive(async () => {
+    await ensureReady();
+    // Popup dibuka sebagai tab saat debugging juga punya sender.tab; halaman
+    // ekstensi bukan toko dan tidak boleh masuk daftar Seller Centre.
+    const tabId = sender.url?.startsWith(chrome.runtime.getURL("")) ? undefined : sender.tab?.id;
 
     switch (msg.type) {
       case MSG.HELLO: {
         if (tabId !== undefined) stateFor(tabId, msg);
-        await syncAlarm();
+        await persistSession();
         updateBadge();
         return { settings };
       }
@@ -287,13 +434,13 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       case MSG.TEST: {
         const label = tabId !== undefined ? stateFor(tabId, msg).label : null;
         const kind = msg.kind === KIND.CHAT ? KIND.CHAT : KIND.NOTIF;
-        await pushNotification({
+        const sent = await pushNotification({
           kind,
           title: `${kind === KIND.CHAT ? "💬 Tes chat" : "🔔 Tes notifikasi"} — ${label || "Seller Centre"}`,
           body: "Kalau notifikasi ini muncul dan berbunyi, ekstensi bekerja normal.",
           tabId,
         });
-        return { ok: true };
+        return sent;
       }
       case MSG.SET_ENABLED: {
         await saveSettings({ enabled: Boolean(msg.enabled) });
@@ -307,7 +454,8 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       }
       case MSG.RESET_BASELINE: {
         for (const st of tabs.values()) st.kinds = Object.create(null);
-        persistSoon();
+        markSessionDirty();
+        await persistSession();
         updateBadge();
         return { ok: true };
       }
@@ -329,7 +477,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       default:
         return { ok: false, reason: "unknown-type" };
     }
-  })().then(
+  }).then(
     (res) => respond(res),
     (err) => respond({ ok: false, error: String(err?.message || err) }),
   );
@@ -339,45 +487,24 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
 
 /* ------------------------------------------------------------ lifecycle ---- */
 
-/**
- * Port panjang dari tiap tab Seller Center. Selama minimal satu port hidup,
- * Chrome menunda pembunuhan service worker, jadi scheduler tidak sering
- * dingin-start. Port juga jadi sinyal tab hilang yang lebih cepat daripada
- * polling chrome.tabs.
- */
-chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== "ssn-keepalive") return;
-  const tabId = port.sender?.tab?.id;
-  if (tabId !== undefined) stateFor(tabId, { url: port.sender?.url, title: port.sender?.tab?.title });
-  port.onDisconnect.addListener(() => {
-    if (tabId !== undefined && tabs.delete(tabId)) {
-      updateBadge();
-      persistSoon();
-    }
-  });
-});
-
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabs.delete(tabId)) {
+  runExclusive(async () => {
+    await ensureReady();
+    if (!tabs.delete(tabId)) return;
+    markSessionDirty();
     updateBadge();
-    persistSoon();
-  }
+    await persistSession();
+  }).catch((err) => console.warn("[SSN] gagal membersihkan tab tertutup:", err));
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
-  await loadSettings();
-  await syncAlarm();
-  updateBadge();
+  await runExclusive(ensureReady);
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  await loadSettings();
-  await syncAlarm();
-  updateBadge();
+  await runExclusive(ensureReady);
 });
 
 // Setiap kali worker bangun (termasuk dari alarm), pastikan settings termuat.
-loadSettings()
-  .then(() => Promise.all([syncAlarm(), rehydrate()]))
-  .then(updateBadge)
+ensureReady()
   .catch((err) => console.warn("[SSN] init gagal:", err));

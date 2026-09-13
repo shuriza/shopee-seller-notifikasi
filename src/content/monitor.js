@@ -243,26 +243,6 @@ window.addEventListener("blur", () => probeAndReport(true));
 // dan itu sudah ditutup oleh alarm di service worker.
 const localTimer = setInterval(() => probeAndReport(), 10_000);
 
-/* ------------------------------------------------------------ keep-alive ---- */
-
-/**
- * Port panjang mencegah service worker mati diam-diam selama tab Seller Center
- * masih terbuka. Reconnect otomatis kalau worker sempat dimatikan Chrome.
- */
-let port = null;
-function connect() {
-  if (disposed) return;
-  try {
-    port = chrome.runtime.connect({ name: "ssn-keepalive" });
-    port.onDisconnect.addListener(() => {
-      port = null;
-      if (!disposed) setTimeout(connect, 5000);
-    });
-  } catch {
-    setTimeout(connect, 15000);
-  }
-}
-
 /* ----------------------------------------------------------------- panel ---- */
 
 let panelEl = null;
@@ -298,10 +278,16 @@ function renderPanel() {
     });
     panelEl.querySelector("[data-toggle]").addEventListener("click", async () => {
       const next = !settings.enabled;
-      const res = await chrome.runtime.sendMessage({ type: MSG.SET_ENABLED, enabled: next });
-      if (res?.settings) settings = res.settings;
-      renderPanel();
-      hint(next ? "Monitor aktif." : "Monitor dimatikan.");
+      try {
+        const res = await chrome.runtime.sendMessage({ type: MSG.SET_ENABLED, enabled: next });
+        if (!res?.settings) throw new Error(res?.error || "Pengaturan tidak tersimpan.");
+        settings = res.settings;
+        renderPanel();
+        hint(settings.enabled ? "Monitor aktif." : "Monitor dimatikan.");
+        if (settings.enabled) probeAndReport(true);
+      } catch (err) {
+        hint(`Gagal mengubah monitor: ${errorText(err)}`);
+      }
     });
   }
   panelEl.querySelector("[data-toggle]").textContent = settings.enabled ? "⏸ Matikan Monitor" : "▶ Nyalakan Monitor";
@@ -317,15 +303,29 @@ function hint(text) {
   el.__t = setTimeout(() => (el.textContent = ""), 4000);
 }
 
+/** @param {unknown} err */
+function errorText(err) {
+  return String(err?.message || err || "Coba lagi.");
+}
+
+/** @param {any} res @param {"notif"|"chat"} kind */
+function testHint(res, kind) {
+  const label = kind === "chat" ? "Tes suara chat" : "Notifikasi tes";
+  if (!res?.ok) return `Gagal mengirim ${label.toLowerCase()}: ${res?.error || "Coba lagi."}`;
+  if (!res.audio?.ok) return `${label} dikirim, tetapi suara gagal diputar: ${res.audio?.error || "Coba lagi."}`;
+  if (res.audio.skipped) return `${label} dikirim. Suara sedang dinonaktifkan.`;
+  return `${label} dikirim dan suara diputar.`;
+}
+
 /** @param {"notif"|"chat"} kind */
 async function fireTest(kind) {
   try {
     // shopName ikut dikirim: hook baru menemukannya beberapa saat setelah
     // HELLO, jadi tanpa ini notifikasi tes memakai label domain, bukan toko.
-    await chrome.runtime.sendMessage({ type: MSG.TEST, kind, shopName, url: location.href });
-    hint("Notifikasi tes dikirim. Cek pojok layar & suara.");
+    const res = await chrome.runtime.sendMessage({ type: MSG.TEST, kind, shopName, url: location.href });
+    hint(testHint(res, kind));
   } catch (err) {
-    hint("Gagal: reload halaman ini lalu coba lagi.");
+    hint(`Gagal mengirim tes: ${errorText(err)}`);
   }
 }
 
@@ -341,6 +341,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
   if (msg.type === MSG.SETTINGS) {
     settings = msg.settings || settings;
     renderPanel();
+    if (settings.enabled) probeAndReport(true);
     respond?.({ ok: true });
   }
 });
@@ -368,7 +369,6 @@ function dispose() {
   }
   lastTitle = document.title;
   startObserver();
-  connect();
   renderPanel();
   probeAndReport(true);
 })();

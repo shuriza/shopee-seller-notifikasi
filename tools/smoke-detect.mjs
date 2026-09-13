@@ -1,5 +1,5 @@
 // Smoke test logika deteksi. Jalankan: node tools/smoke-detect.mjs
-import { applyReading, createState, normalizeCount, totalUnread } from "../src/shared/detect.js";
+import { applyReading, createState, normalizeCount, restoreReading, totalUnread } from "../src/shared/detect.js";
 
 const OPTS = { onlyOnIncrease: true, cooldownSeconds: 5, notifyOrders: true, notifyChats: true };
 let fail = 0;
@@ -149,6 +149,19 @@ const check = (name, cond, extra = "") => {
   // Seller berpindah tab; pesanan berikut datang hanya 1 detik kemudian.
   const loud = applyReading(st, { kind: "notif", count: 2, source: "dom" }, OPTS, 2_000);
   check("setelah tab ditinggalkan, notifikasi tetap terkirim", loud.event?.count === 2, loud.reason);
+}
+
+// 14. Jika OS/Chrome menolak membuat notifikasi, pembacaan dikembalikan agar
+//     angka sama dapat dikirim lagi pada probe berikutnya—bukan hilang diam.
+{
+  const st = createState();
+  applyReading(st, { kind: "notif", count: 0, source: "dom" }, OPTS, 0);
+  const before = { ...st.kinds.notif, proven: { ...st.kinds.notif.proven } };
+  const failed = applyReading(st, { kind: "notif", count: 1, source: "dom" }, OPTS, 1_000);
+  restoreReading(st, "notif", before);
+  const retry = applyReading(st, { kind: "notif", count: 1, source: "dom" }, OPTS, 2_000);
+  check("kegagalan awal tetap menghasilkan event", failed.event?.count === 1, failed.reason);
+  check("angka sama dapat dicoba ulang setelah rollback", retry.event?.count === 1 && retry.event.prev === 0, retry.reason);
 }
 
 console.log(fail ? `\n${fail} test gagal` : "\nsemua test lolos");

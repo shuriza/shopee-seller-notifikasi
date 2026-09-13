@@ -17,12 +17,32 @@ let settings = null;
 /** @param {any} msg */
 const call = (msg) => chrome.runtime.sendMessage(msg);
 
+/** @param {string} text */
+function setStatus(text) {
+  document.getElementById("status").textContent = text;
+}
+
+/** @param {unknown} err */
+function errorText(err) {
+  return String(err?.message || err || "Coba lagi.");
+}
+
+/** @param {any} res @param {"notifikasi"|"suara chat"} test */
+function testStatus(res, test) {
+  if (!res?.ok) return `Gagal mengirim tes ${test}: ${res?.error || "Coba lagi."}`;
+  if (!res.audio?.ok) {
+    return `Tes ${test} terkirim, tetapi suara gagal diputar: ${res.audio?.error || "Coba lagi."}`;
+  }
+  if (res.audio.skipped) return `Tes ${test} terkirim. Suara dinonaktifkan.`;
+  return `Tes ${test} terkirim dan suara diputar.`;
+}
+
 function render(state) {
   settings = state.settings;
   $("enabled").checked = settings.enabled;
-  $("status").textContent = settings.enabled
+  setStatus(settings.enabled
     ? `Aktif · cek tiap ${settings.pollSeconds}s`
-    : "Monitor dimatikan";
+    : "Monitor dimatikan");
   for (const id of TOGGLES) $(id).checked = Boolean(settings[id]);
 
   $("volume").value = String(Math.round(settings.volume * 100));
@@ -52,7 +72,11 @@ function render(state) {
     num.className = total > 0 ? "num" : "num zero";
     num.textContent = String(total);
     li.append(name, num);
-    li.addEventListener("click", () => chrome.tabs.update(t.tabId, { active: true }));
+    li.addEventListener("click", () => {
+      chrome.tabs.update(t.tabId, { active: true }).catch((err) => {
+        setStatus(`Gagal membuka tab: ${errorText(err)}`);
+      });
+    });
     list.appendChild(li);
   }
 
@@ -64,42 +88,72 @@ function render(state) {
 
 async function refresh() {
   const state = await call({ type: MSG.GET_STATE });
-  if (state) render(state);
+  if (!state?.settings) throw new Error(state?.error || "Status tidak tersedia.");
+  render(state);
 }
 
 async function patch(p) {
   const res = await call({ type: MSG.SET_SETTINGS, patch: p });
-  if (res?.settings) settings = res.settings;
+  if (!res?.settings) throw new Error(res?.error || "Pengaturan tidak tersimpan.");
+  settings = res.settings;
   await refresh();
+}
+
+/** @param {Record<string, unknown>} p */
+function patchWithFeedback(p) {
+  patch(p).catch(async (err) => {
+    try {
+      await refresh();
+    } catch {
+      // Tampilkan kegagalan penyimpanan asli bila status terbaru juga tidak tersedia.
+    }
+    setStatus(`Gagal menyimpan pengaturan: ${errorText(err)}`);
+  });
+}
+
+/** @param {"notif"|"chat"} kind */
+async function sendTest(kind) {
+  const test = kind === KIND.CHAT ? "suara chat" : "notifikasi";
+  try {
+    const res = await call({ type: MSG.TEST, kind });
+    setStatus(testStatus(res, test));
+  } catch (err) {
+    setStatus(`Gagal mengirim tes ${test}: ${errorText(err)}`);
+  }
 }
 
 /* -------------------------------------------------------------- bindings ---- */
 
-$("enabled").addEventListener("change", (e) => patch({ enabled: e.target.checked }));
-for (const id of TOGGLES) $(id).addEventListener("change", (e) => patch({ [id]: e.target.checked }));
+$("enabled").addEventListener("change", (e) => patchWithFeedback({ enabled: e.target.checked }));
+for (const id of TOGGLES) $(id).addEventListener("change", (e) => patchWithFeedback({ [id]: e.target.checked }));
 
 $("volume").addEventListener("input", (e) => {
   $("volume-val").textContent = `${e.target.value}%`;
 });
-$("volume").addEventListener("change", (e) => patch({ volume: Number(e.target.value) / 100 }));
+$("volume").addEventListener("change", (e) => patchWithFeedback({ volume: Number(e.target.value) / 100 }));
 
 $("pollSeconds").addEventListener("input", (e) => {
   $("poll-val").textContent = `${e.target.value}s`;
 });
-$("pollSeconds").addEventListener("change", (e) => patch({ pollSeconds: Number(e.target.value) }));
+$("pollSeconds").addEventListener("change", (e) => patchWithFeedback({ pollSeconds: Number(e.target.value) }));
 
 $("cooldownSeconds").addEventListener("input", (e) => {
   $("cool-val").textContent = `${e.target.value}s`;
 });
-$("cooldownSeconds").addEventListener("change", (e) => patch({ cooldownSeconds: Number(e.target.value) }));
+$("cooldownSeconds").addEventListener("change", (e) => patchWithFeedback({ cooldownSeconds: Number(e.target.value) }));
 
-document.getElementById("test-notif").addEventListener("click", () => call({ type: MSG.TEST, kind: KIND.NOTIF }));
-document.getElementById("test-chat").addEventListener("click", () => call({ type: MSG.TEST, kind: KIND.CHAT }));
+document.getElementById("test-notif").addEventListener("click", () => sendTest(KIND.NOTIF));
+document.getElementById("test-chat").addEventListener("click", () => sendTest(KIND.CHAT));
 document.getElementById("reset").addEventListener("click", async () => {
-  await call({ type: MSG.RESET_BASELINE });
-  await refresh();
+  try {
+    const res = await call({ type: MSG.RESET_BASELINE });
+    if (!res?.ok) throw new Error(res?.error || "Baseline tidak dapat disetel ulang.");
+    await refresh();
+  } catch (err) {
+    setStatus(`Gagal menyetel ulang baseline: ${errorText(err)}`);
+  }
 });
 
 refresh().catch((err) => {
-  document.getElementById("status").textContent = `Gagal memuat: ${err.message}`;
+  setStatus(`Gagal memuat: ${errorText(err)}`);
 });

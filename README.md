@@ -3,14 +3,15 @@
 Push notifikasi Chrome untuk **Shopee Seller Centre** — pesanan/notifikasi baru dan chat pembeli
 terdeteksi walau tab tidak aktif, dengan **suara berbeda** untuk chat dan notifikasi.
 
-Dibuat untuk seller yang memegang **banyak akun**: setiap notifikasi diberi label nama toko, jadi
-langsung jelas akun mana yang butuh perhatian. Klik notifikasi → langsung lompat ke tab toko itu.
+Dibuat untuk seller yang memegang **banyak akun**: notifikasi memakai nama toko bila ditemukan,
+dengan fallback domain dan nomor tab. Klik notifikasi membuka tab asalnya. Ekstensi tidak memisahkan
+cookie akun atau menyatukan beberapa profil Chrome dalam satu dashboard.
 
 ## Kenapa perlu
 
-Seller Centre tidak mengirim push notification untuk setiap pesanan masuk. Badge di header hanya
-diperbarui saat tab aktif, dan Chrome men-throttle timer halaman background jadi ~1×/menit — jadi
-polling di dalam halaman saja telat berat. Ekstensi ini memindahkan penjadwalan ke luar halaman.
+Notifikasi yang terlambat atau terlewat menyulitkan pemantauan toko. Chrome dapat membatasi timer
+tab background; ekstensi menambahkan pemeriksaan melalui alarm worker dan mengamati sinyal yang
+sudah diterima halaman. Ini tidak memaksa server Shopee atau tab yang dibekukan untuk mengirim data.
 
 ## Cara pakai
 
@@ -19,18 +20,19 @@ polling di dalam halaman saja telat berat. Ekstensi ini memindahkan penjadwalan 
 2. Buka Seller Centre dan **refresh** halamannya sekali.
 3. Klik **🔔 Kirim Notifikasi Tes** di panel kanan-bawah untuk memastikan notifikasi + suara jalan.
    Kalau tidak muncul: izinkan notifikasi Chrome di pengaturan OS (Windows: Focus assist off).
-4. Biarkan tab Seller Centre tetap terbuka. Satu tab per akun; semua dipantau bersamaan.
+4. Biarkan tab Seller Centre tetap terbuka dan login. Akun yang berbeda biasanya membutuhkan profil
+   Chrome terpisah; pasang ekstensi di setiap profil tersebut. Dua tab dalam profil sama berbagi sesi.
 5. **⏸ Matikan Monitor** di panel atau toggle di popup untuk menjeda sementara.
 
 ## Cara kerja deteksi
 
 Tiga sumber dengan tingkat kepercayaan berbeda, di-merge di `src/shared/detect.js`:
 
-| Sumber | Cara | Tahan throttle | Peringkat |
+| Sumber | Cara | Syarat | Peringkat |
 | --- | --- | --- | --- |
-| `api` | hook `fetch`/XHR/WebSocket, baca field `unread*` dari JSON Shopee | ya | 3 (tertinggi) |
-| `dom` | badge di header (`class` mengandung badge/unread/count, `<sup>`) | sebagian | 2 |
-| `title` | prefix `(3)` pada judul tab | ya | 1 |
+| `api` | hook `fetch`/XHR/WebSocket, baca field `unread*` | halaman tetap menerima respons | 3 (tertinggi) |
+| `dom` | badge header (`class` badge/unread/count, `<sup>`) | DOM diperbarui halaman | 2 |
+| `title` | prefix `(3)` pada judul tab | judul diperbarui halaman | 1 |
 
 Aturan yang menjaga notifikasi tetap akurat:
 
@@ -48,8 +50,29 @@ karena `setInterval` di tab background di-throttle. `MutationObserver` menangkap
 saat tab masih hidup. Audio diputar dari **offscreen document** — service worker tidak punya DOM,
 dan content script bisa kena kebijakan autoplay atau tab yang di-mute.
 
-Privasi: tidak ada jaringan keluar. Hook hanya membaca angka `unread` dari respons yang memang sudah
-diminta halaman Shopee sendiri.
+### Ketahanan saat Chrome menghentikan service worker
+
+Manifest V3 boleh menghentikan service worker setelah idle; itu perilaku normal Chrome. Ekstensi
+tidak mengandalkan port keep-alive. Sebelum setiap respons
+`HELLO`, `REPORT`, reset baseline, atau target klik notifikasi selesai, state dedupe dan target tab
+disimpan di `chrome.storage.session`. Saat worker dibangunkan lagi oleh alarm/pesan/notifikasi,
+state dipulihkan lebih dulu lalu tab yang benar-benar sudah tertutup dipangkas.
+
+Artinya count yang sama tidak diulang setelah worker idle/restart, label toko tidak kembali ke
+fallback domain, dan klik notifikasi yang masih tampil tetap dapat membuka tab asalnya. State sesi
+memang dihapus ketika Chrome/profile ditutup; tab Seller Centre akan membuat baseline baru saat
+dibuka lagi, sehingga tetap tidak berbunyi hanya karena browser baru dinyalakan.
+
+Dokumen audio offscreen dengan alasan `AUDIO_PLAYBACK` dapat ditutup Chrome setelah kira-kira 30
+detik hening. Sebelum setiap suara, worker mengecek dokumen itu dan membuat ulang bila perlu.
+Notifikasi layar dan suara adalah dua hasil terpisah: bila toast berhasil tetapi audio gagal,
+popup/panel menyatakan kegagalan suara secara eksplisit—toast tidak dikirim ulang agar tidak
+menggandakan notifikasi. Bila Chrome menolak membuat toast, pembacaan dikembalikan agar probe
+berikutnya dapat mencoba mengirimnya lagi.
+
+Privasi: tidak ada server ekstensi atau pengiriman data ke pihak ketiga. Halaman Shopee tetap memakai
+jaringannya sendiri. Hook membaca respons halaman secara lokal; laporan yang diteruskan ke worker
+berisi hitungan, metadata halaman, dan nama toko. Tidak ada replay request atau penyimpanan password.
 
 ## Struktur
 
@@ -60,12 +83,12 @@ src/shared/detect.js          inti keputusan (murni, tanpa API browser)
 src/background/service-worker.js  scheduler, notifikasi, badge, state
 src/offscreen/                pemutar audio WebAudio
 src/content/hook.js           dunia MAIN: sniff fetch/XHR/WebSocket
-src/content/monitor.js        probe DOM/title, panel, keep-alive port
+src/content/monitor.js        probe DOM/title dan panel kontrol; tanpa keep-alive port
 src/popup/                    pengaturan lengkap
 tools/gen-assets.mjs          generator ikon PNG + suara WAV (tanpa binary blob)
-tools/smoke-detect.mjs        31 assert logika deteksi (tanpa browser)
+tools/smoke-detect.mjs        33 assert logika deteksi (tanpa browser)
 tools/fixture/                Seller Centre palsu (HTTPS) untuk e2e
-tools/e2e.mjs                 22 assert di Chrome sungguhan + ekstensi ter-load
+tools/e2e.mjs                 Chrome sungguhan + ekstensi ter-load
 tools/pack.mjs                bundel zip untuk Web Store
 ```
 
@@ -88,28 +111,37 @@ Chrome 137+ mencabut `--load-extension`, jadi e2e memakai opsi `enableExtensions
 
 ## Status verifikasi
 
-Terakhir dijalankan di Chrome 152 / Windows 11: **31/31** assert logika deteksi, **22/22** assert
-e2e (0 gagal). Yang dibuktikan e2e, bukan diasumsikan:
+Rilis 1.1.0: **33 pemeriksaan logika** dan **19 pemeriksaan browser** pada Chrome 152 / Windows 11.
+Browser memakai fixture HTTPS lokal, bukan akun Shopee produksi. Cakupannya:
 
-- push notifikasi & suara untuk badge notif dan badge chat saat tab di latar belakang
-- angka `unread` yang datang dari respons API (bukan hanya badge DOM)
-- suara chat berbeda dari suara notifikasi
-- tab sedang aktif → tidak push (`onlyWhenHidden`), dan halaman memang `visible` + fokus saat diuji
-- monitor dimatikan → hening; dinyalakan lagi → push kembali
-- offscreen audio document benar-benar dibuat
-- popup memuat status, mendaftar tab dengan nama toko, dan menghitung notifikasi terkirim
+- toast diterima API Chrome; respons sukses audio notif dan chat diterima dari offscreen;
+- offscreen ditutup secara eksplisit, kemudian TEST berikutnya membuat ulang dan memutar audio;
+- kegagalan pembuatan toast disimulasikan, TEST melaporkan error dan percobaan berikutnya berhasil;
+- kenaikan badge background menghasilkan push, hitungan sama tidak mengulangnya;
+- tab terlihat tidak diberi toast; dua perubahan pengaturan bersamaan sama-sama tersimpan;
+- popup/panel menampilkan hasil pengiriman, dan halaman ekstensi tidak terdaftar sebagai toko.
 
-Empat bug ditemukan lewat verifikasi ini, bukan lewat pembacaan kode:
+**Batas bukti:** `Runtime.terminateExecution` di harness hanya membuktikan bahwa pesan dan hitungan
+tetap bekerja setelah command tersebut. Itu bukan bukti worker baru dibuat atau state dipulihkan
+dari storage. Cold-start worker penuh dan klik toast OS sesudah restart belum terverifikasi otomatis.
+Audio diverifikasi lewat penyelesaian WebAudio, bukan rekaman speaker; toast OS dapat dipengaruhi
+pengaturan Windows. Struktur DOM/API dan nama toko Shopee nyata masih perlu diuji dengan sesi seller.
 
-1. cooldown menelan notifikasi *pertama* (`notifiedAt: 0` dibaca sebagai epoch 0);
-2. probe tidak melaporkan nol, sehingga badge yang hilang setelah dibaca tidak menurunkan state dan
-   pesanan berikutnya dianggap "turun" lalu senyap;
-3. cek `onlyWhenHidden` berjalan setelah state dimutasi, sehingga notifikasi yang dilewati tetap
-   menyalakan cooldown dan pesanan pertama setelah pindah tab hilang;
-4. label notifikasi menebak nama toko dari judul halaman, sehingga semua akun tampak sama.
+## Perubahan 1.1.0
+
+- Bootstrap worker tunggal, operasi state diurutkan, dan baseline disimpan sebelum respons REPORT.
+- Nama toko dipertahankan saat probe awal belum membawa nama; target klik disimpan dalam sesi.
+- Port keep-alive dan loop reconnect dihapus; kegagalan pesan sementara tidak menghapus baseline.
+- Dokumen audio diperiksa ulang setiap pemutaran; feedback membedakan toast gagal, suara gagal,
+  suara dimatikan, dan sukses.
+- Pembacaan dikembalikan setelah toast ditolak sehingga probe berikutnya dapat mencoba lagi.
+- Minimum Chrome 120 untuk periode alarm 30 detik; lookup audio memakai `runtime.getContexts`.
 
 ## Catatan
 
 - Seller Centre harus tetap terbuka; ekstensi tidak bisa login atau polling tanpa sesi tab.
+- Browser ditutup, perangkat tidur, tab dibuang, atau sesi habis dapat menghentikan pemantauan.
+- Badge agregat tidak menjamin setiap pesanan terdeteksi: angka tetap (mis. `99+`) dan perubahan
+  yang terjadi di antara dua probe mungkin tidak menghasilkan sinyal baru.
 - Interval bawah `chrome.alarms` adalah 30 detik; nilai lebih kecil di popup tetap dinaikkan ke 30s.
   Deteksi tetap bisa **instan** lewat hook API dan MutationObserver saat sinyal muncul.
