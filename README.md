@@ -64,10 +64,25 @@ Aturan yang menjaga notifikasi tetap akurat:
 - **Tab sedang ditatap** → perubahan diakui tapi senyap, tanpa menyalakan cooldown, jadi pesanan
   berikutnya setelah pindah tab tetap berbunyi.
 
+### Chat berulang dan banyak pembeli
+
+Ekstensi membaca **jumlah chat belum dibaca**, bukan identitas pengirim. Jadi:
+
+- Chat kedua dari pembeli yang sama **tetap** memicu notifikasi selama jumlah belum dibaca naik dan
+  jeda anti-spam sudah lewat.
+- Beberapa pesan yang datang beruntun dalam jeda tersebut **diringkas menjadi satu** notifikasi;
+  jumlah pada notifikasi berikutnya tetap mencerminkan total terbaru.
+- Pembeli berbeda **tidak** menghasilkan notifikasi terpisah per orang, dan tidak ada nama pengirim
+  di notifikasi. Untuk mengetahui siapa yang mengirim, buka tab Seller Centre.
+- Membalas atau membaca chat menurunkan jumlah; pesan berikutnya dihitung sebagai kenaikan baru.
+- Atur **Jeda anti-spam** di popup: `0` detik berarti setiap kenaikan langsung diberi tahu.
+
 Penjadwalan: `chrome.alarms` di service worker (default 30s) mengirim `PROBE_NOW` ke setiap tab,
-karena `setInterval` di tab background di-throttle. `MutationObserver` menangkap perubahan instan
-saat tab masih hidup. Audio diputar dari **offscreen document** — service worker tidak punya DOM,
-dan content script bisa kena kebijakan autoplay atau tab yang di-mute.
+karena `setInterval` di tab background di-throttle. Itu hanya jaring pengaman: hook API dan
+`MutationObserver` melaporkan lewat microtask tanpa `setTimeout`, sehingga badge/WebSocket yang
+berubah di tab background tidak menunggu timer yang bisa ditunda Chrome. Audio diputar dari
+**offscreen document** — service worker tidak punya DOM, dan content script bisa kena kebijakan
+autoplay atau tab yang di-mute.
 
 ### Ketahanan saat Chrome menghentikan service worker
 
@@ -134,25 +149,34 @@ Chrome 137+ mencabut `--load-extension`, jadi e2e memakai opsi `enableExtensions
 
 ## Status verifikasi
 
-Rilis 1.2.0: **35 pemeriksaan logika** dan **35 pemeriksaan browser** pada Chrome 152 / Windows 11.
+Rilis 1.2.1: **39 pemeriksaan logika** dan **39 pemeriksaan browser** pada Chrome 152 / Windows 11.
 Browser memakai fixture HTTPS lokal, bukan akun Shopee produksi. Cakupannya:
 
 - toast diterima API Chrome; respons sukses audio notif dan chat diterima dari offscreen;
 - offscreen ditutup secara eksplisit, kemudian TEST berikutnya membuat ulang dan memutar audio;
 - kegagalan pembuatan toast disimulasikan, TEST melaporkan error dan percobaan berikutnya berhasil;
 - kenaikan badge background menghasilkan push, hitungan sama tidak mengulangnya;
+- badge DOM, perubahan teks badge, dan respons API chat dilaporkan tanpa menunggu alarm worker;
+- chat beruntun dalam jeda anti-spam diringkas satu notifikasi, kenaikan sesudahnya tetap diberi tahu;
 - tab terlihat tidak diberi toast; dua perubahan pengaturan bersamaan sama-sama tersimpan;
 - popup/panel menampilkan hasil pengiriman, dan halaman ekstensi tidak terdaftar sebagai toko.
 - riwayat mencatat percobaan gagal/berhasil dan label historis tanpa mengubah statistik ketika gagal;
 - batas 200 entri, penghapusan tanpa mengubah baseline, penolakan sesi lama dan tab tertutup;
 - dashboard dibuka lewat popup, filter/pencarian/label literal, konfirmasi batal/hapus;
-- layout desktop dan 340px, serta riwayat tetap tersedia setelah browser benar-benar ditutup/dibuka.
+- layout desktop dan 340px; durability riwayat lintas browser restart perlu dicek manual.
 
 **Batas bukti:** `Runtime.terminateExecution` di harness hanya membuktikan bahwa pesan dan hitungan
 tetap bekerja setelah command tersebut. Itu bukan bukti worker baru dibuat atau state dipulihkan
 dari storage. Cold-start worker penuh dan klik toast OS sesudah restart belum terverifikasi otomatis.
 Audio diverifikasi lewat penyelesaian WebAudio, bukan rekaman speaker; toast OS dapat dipengaruhi
 pengaturan Windows. Struktur DOM/API dan nama toko Shopee nyata masih perlu diuji dengan sesi seller.
+
+## Perubahan 1.2.1
+
+- Laporan chat/notifikasi tidak lagi menunggu `setTimeout` yang dapat di-throttle pada tab
+  background, sehingga chat nyata tidak tertunda sampai polling berikutnya.
+- Perubahan teks badge (`characterData`) ikut memicu pembacaan ulang.
+- Dokumentasi perilaku chat berulang dan batas identitas pengirim.
 
 ## Perubahan 1.2.0
 

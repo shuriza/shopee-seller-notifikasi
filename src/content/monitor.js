@@ -145,6 +145,7 @@ function hidden() {
 
 let sending = false;
 let pendingProbe = false;
+let probeQueued = false;
 
 async function probeAndReport(force = false) {
   if (disposed || !settings.enabled) return;
@@ -176,18 +177,25 @@ async function probeAndReport(force = false) {
     sending = false;
     if (pendingProbe) {
       pendingProbe = false;
-      setTimeout(() => probeAndReport(), 200);
+      requestProbe();
     }
   }
 }
 
-let debounceTimer = null;
-function probeSoon(delay = 400) {
-  if (debounceTimer) return;
-  debounceTimer = setTimeout(() => {
-    debounceTimer = null;
-    probeAndReport();
-  }, delay);
+/**
+ * Gabungkan event API/MutationObserver pada giliran event-loop yang sama tanpa
+ * setTimeout. Timer halaman Seller Centre background dapat di-throttle Chrome
+ * sampai puluhan detik; microtask tetap berjalan setelah event yang membawa
+ * badge/API benar-benar diterima. Gate `sending` menangani event yang datang
+ * saat satu laporan masih menunggu respons worker.
+ */
+function requestProbe() {
+  if (probeQueued) return;
+  probeQueued = true;
+  queueMicrotask(() => {
+    probeQueued = false;
+    void probeAndReport();
+  });
 }
 
 /* --------------------------------------------------------------- sumber ---- */
@@ -202,15 +210,22 @@ window.addEventListener("message", (ev) => {
   if (d.kind !== "chat" && d.kind !== "notif") return;
   const prev = apiPending.get(d.kind);
   apiPending.set(d.kind, prev === undefined ? d.count : Math.max(prev, d.count));
-  probeSoon(150);
+  requestProbe();
 });
 
 const observer = new MutationObserver((records) => {
   for (const r of records) {
-    const target = /** @type {Element} */ (r.target);
+    // characterData target adalah Text, bukan Element. Mulai dari induknya agar
+    // update React seperti badge.firstChild.data = "2" tetap diklasifikasikan.
+    const target = r.target.nodeType === Node.TEXT_NODE ? r.target.parentElement : /** @type {Element} */ (r.target);
     const cls = target?.getAttribute?.("class") || "";
-    if (BADGE_WORDS.test(cls) || CHAT_WORDS.test(cls) || NOTIF_WORDS.test(cls) || r.addedNodes.length) {
-      probeSoon();
+    const context = target ? [
+      cls,
+      target.getAttribute?.("aria-label") || "",
+      target.getAttribute?.("data-testid") || "",
+    ].join(" ") : "";
+    if (r.type === "characterData" || BADGE_WORDS.test(context) || CHAT_WORDS.test(context) || NOTIF_WORDS.test(context) || r.addedNodes.length) {
+      requestProbe();
       return;
     }
   }
@@ -230,7 +245,7 @@ function startObserver() {
     new MutationObserver(() => {
       if (document.title === lastTitle) return;
       lastTitle = document.title;
-      probeSoon(100);
+      requestProbe();
     }).observe(titleEl, { subtree: true, childList: true, characterData: true });
   }
 }

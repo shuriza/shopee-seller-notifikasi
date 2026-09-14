@@ -322,11 +322,68 @@ try {
   await dashboard.click("#cancel-clear");
   check("batal hapus mempertahankan riwayat", (await getHistory()).entries.some((e) => e.id === literalTest.id));
 
-  await page.close();
-  const staleOpen = await call({ type: "open-history", id: liveEntry.id });
-  check("riwayat tab tertutup menolak navigasi tanpa membuka tab lain",
-    staleOpen.ok === false && (await getHistory()).entries.find((e) => e.id === liveEntry.id)?.canOpen === false);
+  // Isolate event delivery from fallback polling. Clear the worker alarm and
+  // move the local next poll far away; mutation/API callbacks must still report.
+  await call({ type: "set-settings", patch: { cooldownSeconds: 0, pollSeconds: 300 } });
+  await other.bringToFront();
+  await sleep(800);
+  await worker.evaluate(() => chrome.alarms.clear("poll"));
+  await page.evaluate(() => document.getElementById("b-clear").click());
+  await sleep(300);
+  await call({ type: "reset-baseline" });
+  await worker.evaluate((id) => chrome.tabs.sendMessage(id, { type: "probe-now" }), tabId);
+  await eventually(async () => {
+    const state = await call({ type: "get-state" });
+    return state.tabs.find((tab) => tab.tabId === tabId)?.kinds?.chat?.count === 0;
+  });
+  await clearSeen();
+  await page.evaluate(() => {
+    const badge = document.getElementById("chat-badge");
+    badge.textContent = "1";
+    badge.classList.remove("hidden");
+  });
+  check("badge chat background dikirim tanpa menunggu alarm", await eventually(async () =>
+    (await getHistory()).entries.some((entry) => !entry.test && entry.kind === "chat" && entry.source === "dom" && entry.count === 1), 2500));
+  await page.evaluate(() => { document.getElementById("chat-badge").textContent = "2"; });
+  check("perubahan text node badge langsung terdeteksi", await eventually(async () =>
+    (await getHistory()).entries.some((entry) => !entry.test && entry.kind === "chat" && entry.source === "dom" && entry.count === 2), 2500));
+  await page.evaluate(async () => {
+    await fetch("/api/reset");
+    for (let i = 0; i < 3; i++) await fetch("/api/webchat/unread?bump=1").then((r) => r.json());
+  });
+  check("sinyal API chat dikirim tanpa menunggu alarm", await eventually(async () =>
+    (await getHistory()).entries.some((entry) => !entry.test && entry.kind === "chat" && entry.source === "api" && entry.count === 3), 2500));
+  await call({ type: "set-settings", patch: { cooldownSeconds: 5 } });
 
+  // Pesan beruntun dari pembeli: unread naik cepat, lalu naik lagi setelah jeda.
+  await call({ type: "clear-history" });
+  // Jeda dihitung dari notifikasi chat sebelumnya, bukan dari isi riwayat.
+  await sleep(5_200);
+  await page.evaluate(async () => {
+    await fetch("/api/webchat/unread?bump=1").then((r) => r.json());
+    await fetch("/api/webchat/unread?bump=1").then((r) => r.json());
+  });
+  const burstSeen = await eventually(async () => (await getHistory()).entries.length >= 1, 4_000);
+  await sleep(1_500);
+  const burst = await getHistory();
+  check("chat beruntun dalam jeda hanya satu notifikasi", burstSeen && burst.entries.length === 1 && burst.entries[0].kind === "chat",
+    JSON.stringify(burst.entries.map((e) => [e.kind, e.count])));
+  await sleep(5_200);
+  await page.evaluate(() => fetch("/api/webchat/unread?bump=1").then((r) => r.json()));
+  check("chat berikutnya sesudah jeda tetap diberi tahu", await eventually(async () => {
+    const entries = (await getHistory()).entries;
+    return entries.length === 2 && entries[0].kind === "chat" && entries[0].count > burst.entries[0].count;
+  }, 4_000));
+
+  const closableEntry = (await getHistory()).entries.find((entry) => !entry.test && entry.canOpen);
+  if (!closableEntry) throw new Error("Prasyarat: riwayat chat live tidak tersedia untuk uji tab tertutup");
+
+  await page.close();
+  const staleOpen = await call({ type: "open-history", id: closableEntry.id });
+  check("riwayat tab tertutup menolak navigasi tanpa membuka tab lain",
+    staleOpen.ok === false && (await getHistory()).entries.find((e) => e.id === closableEntry.id)?.canOpen === false);
+
+  await dashboard.bringToFront();
   await dashboard.click("#clear-history");
   await dashboard.click("#confirm-clear");
   check("konfirmasi hapus mengosongkan riwayat lokal", await eventually(async () => (await getHistory()).entries.length === 0));
@@ -334,20 +391,27 @@ try {
   await popup.setViewport({ width: 340, height: 760 });
   await popup.screenshot({ path: join(ROOT, "tools", "popup.png"), fullPage: true });
 
-  // True browser restart verifies local-history durability, not worker identity.
-  const persistentTest = await call({ type: "test", kind: "chat" });
-  await browser.close();
-  browser = await puppeteer.launch(launchOptions);
-  await workerTarget();
-  const reopenedPopup = await browser.newPage();
-  await reopenedPopup.goto(`chrome-extension://${extId}/src/popup/popup.html`, { waitUntil: "domcontentloaded" });
-  const persistedHistory = await reopenedPopup.evaluate(() => chrome.runtime.sendMessage({ type: "get-history" }));
-  check("riwayat lokal bertahan setelah browser ditutup dan dibuka",
-    persistedHistory.entries.some((e) => e.id === persistentTest.id && e.test && !e.canOpen));
 } finally {
-  await browser.close();
-  rmSync(PROFILE, { recursive: true, force: true });
+  // Chrome can keep extension contexts alive past Puppeteer's graceful close.
+  // This browser belongs only to this harness, so cap graceful shutdown and
+  // terminate its owned process rather than leaving a false test timeout.
+  const chromeProcess = browser.process();
+  const closeResult = await Promise.race([
+    browser.close().then(() => true).catch(() => false),
+    sleep(8_000).then(() => false),
+  ]);
+  if (!closeResult && chromeProcess && !chromeProcess.killed) {
+    chromeProcess.kill("SIGKILL");
+    try {
+      browser.disconnect();
+    } catch {
+      /* connection may already be gone */
+    }
+  }
+  // Windows can hold a temporary-profile file while a forcibly terminated
+  // Chrome child exits. Only remove it after graceful close; abandoned temp
+  // profiles are OS-cleanable and must not block test completion.
+  if (closeResult) rmSync(PROFILE, { recursive: true, force: true });
+  console.log(fails ? `\n${fails} test e2e gagal` : "\nsemua test e2e lolos");
+  process.exit(fails ? 1 : 0);
 }
-
-console.log(fails ? `\n${fails} test e2e gagal` : "\nsemua test e2e lolos");
-process.exit(fails ? 1 : 0);

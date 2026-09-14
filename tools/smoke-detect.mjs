@@ -174,5 +174,21 @@ const check = (name, cond, extra = "") => {
     withDefaults({ profileLabel: { name: "Toko" } }).profileLabel === "");
 }
 
+// Chat tidak punya identitas pengirim di kontrak pembacaan: semua kenaikan
+// unread mengikuti satu cooldown jenis chat. Ini memastikan pesan berulang
+// tidak menjadi satu notifikasi seumur hidup, tetapi diringkas saat burst.
+{
+  const st = createState();
+  applyReading(st, { kind: "chat", count: 0, source: "api" }, OPTS, 0);
+  const first = applyReading(st, { kind: "chat", count: 1, source: "api" }, OPTS, 1_000);
+  const burst = applyReading(st, { kind: "chat", count: 2, source: "api" }, OPTS, 1_500);
+  const same = applyReading(st, { kind: "chat", count: 2, source: "api" }, OPTS, 2_000);
+  const later = applyReading(st, { kind: "chat", count: 3, source: "api" }, OPTS, 6_000);
+  check("chat pertama setelah baseline memicu", first.event?.count === 1, first.reason);
+  check("chat tambahan dalam jeda diringkas", burst.event === null && burst.reason === "cooldown", burst.reason);
+  check("count chat sama tidak menggandakan notifikasi", same.event === null && same.reason === "unchanged", same.reason);
+  check("chat tambahan sesudah jeda kembali memicu", later.event?.count === 3 && later.event.prev === 2, later.reason);
+}
+
 console.log(fail ? `\n${fail} test gagal` : "\nsemua test lolos");
 process.exit(fail ? 1 : 0);
