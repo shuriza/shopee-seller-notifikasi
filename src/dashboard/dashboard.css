@@ -53,6 +53,18 @@ input:focus, select:focus, button:focus-visible { outline: 3px solid rgb(238 77 
 .tab-list, .history-list { border-top: 1px solid var(--line); }
 .tab-row { display: grid; grid-template-columns: minmax(160px, 1.4fr) minmax(150px, 1fr) auto; gap: 14px; align-items: center; padding: 13px 0; border-bottom: 1px solid var(--line); }
 .tab-name { font-weight: 700; overflow-wrap: anywhere; }
+.tab-row--stale { background: #fffbeb; }
+.stale-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 11px;
+  font-weight: 650;
+  vertical-align: 1px;
+}
 .tab-meta { color: var(--muted); font-size: 13px; }
 .counts { display: flex; flex-wrap: wrap; gap: 6px; }
 .metric { padding: 2px 7px; border-radius: 999px; background: #f2f4f7; color: #475467; font-size: 12px; }

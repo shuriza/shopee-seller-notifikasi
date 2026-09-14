@@ -227,6 +227,24 @@ h2 {
   border: 0;
 }
 
+.stale-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+  margin-right: 4px;
+  vertical-align: 1px;
+  flex-shrink: 0;
+}
+
+.src-pill {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .pill {
   display: inline-block;
   min-width: 16px;

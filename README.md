@@ -27,13 +27,18 @@ sudah diterima halaman. Ini tidak memaksa server Shopee atau tab yang dibekukan 
    Isi **Label profil** (misalnya `Toko Sepatu — Chrome A`), lalu **Simpan label**. Label ditambahkan
    di depan judul notifikasi profil ini; nama toko otomatis tetap tampil. Kosongkan untuk menghapus.
 
-## Riwayat dan monitoring lokal (1.2.0)
+## Riwayat dan monitoring lokal
 
 - Dashboard menampilkan tab Seller Centre dalam **profil browser ini**, jumlah notifikasi/chat,
   sumber hitungan, dan waktu laporan terakhir. Ini bukan pemeriksaan login atau kesehatan koneksi.
 - Maksimal **200 percobaan notifikasi terbaru** disimpan lokal: termasuk tes, toast gagal, dan hasil
   audio. Baseline, hitungan tetap, serta perubahan yang ditekan pengaturan tidak menambah riwayat.
-- Filter berdasarkan jenis, cari nama toko/label profil, atau sembunyikan notifikasi tes.
+- Filter berdasarkan jenis, rentang tanggal, cari nama toko/label profil, atau sembunyikan notifikasi tes.
+- **Ekspor JSON** mengunduh entri yang lolos filter aktif sebagai file `.json` ke folder Unduhan.
+- **Stale tab indicator**: popup dan dashboard menandai tab yang tidak melapor lebih dari 3× interval
+  polling. Berguna mendeteksi tab yang dibuang Chrome atau koneksi terputus.
+- **Sumber per-kind di popup**: pil kecil di samping angka unread menampilkan sumber aktif
+  (`N:api`, `C:dom`) sehingga terlihat hook mana yang memberi data.
 - **Buka asal** memfokuskan tab dan jendela sumber yang masih tersedia. Setelah browser berganti
   sesi, tab ditutup, atau identitas target tidak cocok, tombol tidak membuka ulang URL lama.
 - Riwayat bertahan setelah browser ditutup dan dibuka; label pada entri lama tidak ikut berubah
@@ -149,8 +154,12 @@ Chrome 137+ mencabut `--load-extension`, jadi e2e memakai opsi `enableExtensions
 
 ## Status verifikasi
 
-Rilis 1.2.1: **39 pemeriksaan logika** dan **39 pemeriksaan browser** pada Chrome 152 / Windows 11.
-Browser memakai fixture HTTPS lokal, bukan akun Shopee produksi. Cakupannya:
+Rilis 1.3.0: **39 pemeriksaan logika** (smoke-detect) — semua lolos. **39 pemeriksaan browser** pada
+Chrome 152 / Windows 11 (dari sesi 1.2.1) masih berlaku. Fitur UI baru v1.3.0 (stale badge, filter
+tanggal, ekspor JSON, sumber per-kind) belum masuk harness otomatis dan memerlukan verifikasi manual.
+
+Browser test memakai fixture HTTPS lokal, bukan akun Shopee produksi. Cakupannya:
+- **Fix tanggal filter** menggunakan waktu lokal (bukan UTC) agar inklusif hari penuh di zona WIB.
 
 - toast diterima API Chrome; respons sukses audio notif dan chat diterima dari offscreen;
 - offscreen ditutup secara eksplisit, kemudian TEST berikutnya membuat ulang dan memutar audio;
@@ -170,6 +179,13 @@ tetap bekerja setelah command tersebut. Itu bukan bukti worker baru dibuat atau 
 dari storage. Cold-start worker penuh dan klik toast OS sesudah restart belum terverifikasi otomatis.
 Audio diverifikasi lewat penyelesaian WebAudio, bukan rekaman speaker; toast OS dapat dipengaruhi
 pengaturan Windows. Struktur DOM/API dan nama toko Shopee nyata masih perlu diuji dengan sesi seller.
+
+## Perubahan 1.3.0
+
+- **Stale tab indicator.** Popup dan dashboard menandai tab yang tidak melapor lebih dari 3× interval polling dengan latar kuning dan badge "Stale". Berguna untuk mendeteksi tab yang dibuang Chrome atau koneksi terputus.
+- **Sumber per-kind di popup.** Di bawah angka unread tiap tab popup, pil kecil menampilkan sumber aktif (`N:api`, `C:dom`, dll.) sehingga bisa langsung terlihat apakah hook API atau DOM yang memberi data.
+- **Filter tanggal di dashboard.** Riwayat dapat difilter berdasarkan rentang tanggal (Dari/Sampai) di samping filter jenis dan pencarian label yang sudah ada.
+- **Ekspor JSON.** Tombol "Ekspor JSON" mengunduh entri riwayat yang sesuai filter aktif sebagai file `ssn-riwayat-YYYY-MM-DD.json`. Isi field identik dengan struktur `GET_HISTORY`.
 
 ## Perubahan 1.2.1
 

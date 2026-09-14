@@ -39,6 +39,8 @@ function testStatus(res, test) {
 
 function render(state) {
   settings = state.settings;
+  const staleMs = Math.max(settings.pollSeconds, 30) * 3 * 1000;
+  const now = Date.now();
   const profileLabel = document.getElementById("profile-label");
   profileLabel.hidden = !settings.profileLabel;
   profileLabel.textContent = settings.profileLabel ? `Profil: ${settings.profileLabel}` : "";
@@ -65,16 +67,31 @@ function render(state) {
     list.appendChild(li);
   }
   for (const t of state.tabs) {
-    const total = Object.values(t.kinds).reduce((a, k) => a + k.count, 0);
+    const total = Object.values(t.kinds).reduce((a, k) => a + (k.count || 0), 0);
+    const stale = t.lastReportedAt > 0 && now - t.lastReportedAt > staleMs;
     const li = document.createElement("li");
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = t.label || "Seller Centre";
     name.title = t.url || "";
+    if (stale) {
+      const staleSpan = document.createElement("span");
+      staleSpan.className = "stale-dot";
+      staleSpan.title = `Laporan terakhir: ${t.lastReportedAt ? new Date(t.lastReportedAt).toLocaleTimeString("id-ID") : "—"}`;
+      name.prepend(staleSpan);
+    }
     const num = document.createElement("span");
     num.className = total > 0 ? "num" : "num zero";
     num.textContent = String(total);
+    // per-kind source pill
+    const sources = [];
+    if (t.kinds?.notif?.source) sources.push(`N:${t.kinds.notif.source}`);
+    if (t.kinds?.chat?.source) sources.push(`C:${t.kinds.chat.source}`);
+    const src = document.createElement("span");
+    src.className = "src-pill";
+    src.textContent = sources.join(" ");
     li.append(name, num);
+    if (sources.length) li.append(src);
     li.addEventListener("click", () => {
       chrome.tabs.update(t.tabId, { active: true }).catch((err) => {
         setStatus(`Gagal membuka tab: ${errorText(err)}`);

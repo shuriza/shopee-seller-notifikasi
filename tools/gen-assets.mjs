@@ -56,59 +56,156 @@ function encodePng(width, height, rgba) {
   ]);
 }
 
-/* --------------------------------------------------------------- shape ---- */
+/* ------------------------------------------------------------- SDF shapes ---- */
 // Koordinat normalisasi: -0.5 .. 0.5, y ke bawah.
+// Menggunakan Signed Distance Fields (SDF) untuk rendering antialiasing subpixel
+// dengan efek tumpang-tindih (cutouts) yang tajam dan profesional pada semua ukuran.
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
-const inCircle = (x, y, cx, cy, r) => (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
+const mix = (a, b, t) => a * (1 - t) + b * t;
 
-function inRoundedRect(x, y, half, r) {
-  const ax = Math.abs(x) - (half - r);
-  const ay = Math.abs(y) - (half - r);
-  if (ax <= 0 || ay <= 0) return Math.abs(x) <= half && Math.abs(y) <= half;
-  return ax * ax + ay * ay <= r * r;
+function sdCircle(x, y, cx, cy, r) {
+  return Math.sqrt((x - cx) ** 2 + (y - cy) ** 2) - r;
 }
 
-function inBell(x, y) {
-  const ax = Math.abs(x);
-  if (inCircle(x, y, 0, -0.345, 0.05)) return true; // knob atas
-  if (y >= 0.175 && y <= 0.245) {
-    // rim melebar dengan ujung membulat
-    if (ax <= 0.32) return true;
-    return inCircle(x, y, ax > 0 ? 0.32 : -0.32, 0.21, 0.035);
+function sdRoundedRect(x, y, cx, cy, w, h, r) {
+  const dx = Math.abs(x - cx) - (w / 2 - r);
+  const dy = Math.abs(y - cy) - (h / 2 - r);
+  if (dx > 0 && dy > 0) return Math.sqrt(dx * dx + dy * dy) - r;
+  return Math.max(dx, dy) - r;
+}
+
+function sdSegment(x, y, x0, y0, x1, y1, r) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const l2 = dx * dx + dy * dy;
+  let t = ((x - x0) * dx + (y - y0) * dy) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.sqrt((x - (x0 + t * dx)) ** 2 + (y - (y0 + t * dy)) ** 2) - r;
+}
+
+/**
+ * Tas belanja: bentuk generik "pesanan masuk", digambar sendiri dan sengaja
+ * TIDAK meniru logo Shopee. Badan memakai sudut membulat besar dengan pegangan
+ * lengkung terbuka supaya siluetnya tetap jelas di 16px.
+ */
+function sdBag(x, y) {
+  const cx = -0.07;
+  // Badan tas sedikit meruncing ke bawah supaya terbaca sebagai paper bag,
+  // bukan kotak. Sisi kiri/kanan dimiringkan lewat offset bergantung y.
+  const yTop = -0.1;
+  const yBottom = 0.4;
+  const t = clamp01((y - yTop) / (yBottom - yTop));
+  const halfWidth = 0.26 - 0.025 * t;
+  const body = sdRoundedRect(x, y, cx, (yTop + yBottom) / 2, halfWidth * 2, yBottom - yTop, 0.075);
+
+  // Pegangan: cincin terbuka di atas badan, dipotong pada garis bahu tas.
+  const ring = Math.abs(sdCircle(x, y, cx, -0.12, 0.135)) - 0.036;
+  const handle = Math.max(ring, y - -0.09);
+
+  return Math.min(body, handle);
+}
+
+/** Badge lingkaran di kanan atas yang memuat bel notifikasi. */
+const BADGE = { cx: 0.245, cy: -0.025, r: 0.165 };
+
+function sdBadge(x, y) {
+  return sdCircle(x, y, BADGE.cx, BADGE.cy, BADGE.r);
+}
+
+/**
+ * Bel notifikasi di dalam badge. Dipahat sebagai bentuk negatif sehingga
+ * ikon hanya perlu dua warna dan tetap terbaca pada 16px.
+ */
+function sdBell(x, y) {
+  const cx = BADGE.cx;
+  const cy = BADGE.cy + 0.005;
+  const ax = Math.abs(x - cx);
+
+  const knob = sdCircle(x, y, cx, cy - 0.086, 0.017);
+  const clapper = sdCircle(x, y, cx, cy + 0.079, 0.022);
+
+  const yMin = cy - 0.078;
+  const yMax = cy + 0.042;
+  let body = 1e5;
+  if (y >= yMin && y <= yMax) {
+    const t = (y - yMin) / (yMax - yMin);
+    body = ax - (0.026 + 0.05 * Math.pow(t, 2.2));
   }
-  if (inCircle(x, y, 0, 0.315, 0.08)) return true; // clapper
-  if (y > -0.3 && y < 0.18) {
-    const t = (y + 0.3) / 0.48;
-    const half = 0.09 + 0.215 * Math.pow(t, 1.7);
-    if (ax <= half) return true;
-  }
-  return inCircle(x, y, 0, -0.205, 0.095); // pundak/dome
+  const rim = sdSegment(x, y, cx - 0.076, yMax, cx + 0.076, yMax, 0.016);
+
+  return Math.min(knob, clapper, body, rim);
+}
+
+/** Garis getar: tiga sapuan memancar dari badge ke pojok kanan atas. */
+function sdRing(x, y, i) {
+  const angle = -1.36 + i * 0.44;
+  const inner = BADGE.r + 0.055;
+  const len = 0.085;
+  const x0 = BADGE.cx + Math.cos(angle) * inner;
+  const y0 = BADGE.cy + Math.sin(angle) * inner;
+  return sdSegment(x, y, x0, y0, x0 + Math.cos(angle) * len, y0 + Math.sin(angle) * len, 0.023);
 }
 
 function renderIcon(size) {
-  const SS = 4; // supersampling
   const rgba = Buffer.alloc(size * size * 4);
-  const bg = [0xee, 0x4d, 0x2d];
-  const fg = [0xff, 0xff, 0xff];
+  
+  // Gradien latar oranye hangat. Warna tidak dapat dimerekkan, tetapi bentuk
+  // di atasnya sengaja generik: tidak meniru logo atau wordmark pihak mana pun.
+  const bgStart = [255, 90, 43]; // oranye terang
+  const bgEnd = [217, 34, 10];   // oranye-merah pekat
+  
+  const fg = [255, 255, 255];    // elemen putih bersih
+  
+  // Lebar transisi antialiasing subpixel yang tajam (1.5 piksel)
+  const edge = 1.5 / size;
+  
   for (let py = 0; py < size; py++) {
+    const y = py / size - 0.5;
     for (let px = 0; px < size; px++) {
-      let cov = 0;
-      let bell = 0;
-      for (let sy = 0; sy < SS; sy++) {
-        for (let sx = 0; sx < SS; sx++) {
-          const x = (px + (sx + 0.5) / SS) / size - 0.5;
-          const y = (py + (sy + 0.5) / SS) / size - 0.5;
-          if (inRoundedRect(x, y, 0.5, 0.14)) cov++;
-          if (inBell(x, y)) bell++;
-        }
+      const x = px / size - 0.5;
+      
+      // Latar belakang dengan rounded corners eksterior
+      const dBg = sdRoundedRect(x, y, 0, 0, 1.0, 1.0, 0.28);
+      const alphaBg = clamp01(0.5 - dBg / edge);
+      if (alphaBg <= 0) {
+        rgba.set([0, 0, 0, 0], (py * size + px) * 4);
+        continue;
       }
-      const n = SS * SS;
-      const a = clamp01(cov / n);
-      const b = clamp01(bell / n);
-      const i = (py * size + px) * 4;
-      for (let c = 0; c < 3; c++) rgba[i + c] = Math.round(bg[c] * (1 - b) + fg[c] * b);
-      rgba[i + 3] = Math.round(255 * a);
+      
+      // Interpolasi linier gradien diagonal latar belakang
+      const tBg = clamp01((x + y + 1.0) / 2.0);
+      const currentBg = bgStart.map((start, c) => Math.round(mix(start, bgEnd[c], tBg)));
+      
+      const dBadge = sdBadge(x, y);
+      // Cincin putih memisahkan badge dari tas, seperti stiker yang ditempel.
+      const dBadgeOutline = Math.abs(dBadge) - 0.026;
+      // Tas dipotong tepat di tepi luar cincin badge.
+      const dBag = Math.max(sdBag(x, y), -(dBadge + 0.026));
+      const dBell = sdBell(x, y);
+
+      let dRings = 1e5;
+      for (let i = 0; i < 3; i++) dRings = Math.min(dRings, sdRing(x, y, i));
+
+      const alphaBag = clamp01(0.5 - dBag / edge);
+      const alphaOutline = clamp01(0.5 - dBadgeOutline / edge);
+      const alphaBell = clamp01(0.5 - dBell / edge);
+      const alphaRings = clamp01(0.5 - dRings / edge);
+      // Semua elemen adalah bidang putih di atas latar oranye: tas, cincin
+      // badge, bel di dalam badge, dan garis getar. Interior badge tetap
+      // oranye karena cincin hanya menutup tepinya.
+      const alphaWhite = Math.max(alphaBag, alphaOutline, alphaBell, alphaRings);
+
+      const pixelColor = [...currentBg];
+      for (let c = 0; c < 3; c++) {
+        pixelColor[c] = mix(pixelColor[c], fg[c], alphaWhite);
+      }
+      
+      const idx = (py * size + px) * 4;
+      rgba[idx] = pixelColor[0];
+      rgba[idx + 1] = pixelColor[1];
+      rgba[idx + 2] = pixelColor[2];
+      rgba[idx + 3] = Math.round(255 * alphaBg);
     }
   }
   return encodePng(size, size, rgba);

@@ -52,6 +52,7 @@
             <h2 id="history-heading">Riwayat notifikasi</h2>
             <p>Menyimpan hingga 200 kejadian terbaru di penyimpanan lokal.</p>
           </div>
+          <button class="button button-secondary" id="export-history" type="button">Ekspor JSON</button>
           <button class="button button-danger" id="clear-history" type="button">Hapus riwayat</button>
         </div>
 
@@ -77,6 +78,14 @@
             <input id="history-search" type="search" autocomplete="off" placeholder="Cari label…" />
           </label>
           <label class="check-label"><input id="hide-tests" type="checkbox" /> <span>Sembunyikan tes</span></label>
+          <label>
+          <span>Dari tanggal</span>
+          <input id="date-from" type="date" />
+        </label>
+          <label>
+          <span>Sampai tanggal</span>
+          <input id="date-to" type="date" />
+        </label>
         </div>
 
         <div id="history-error" class="inline-error" role="alert" hidden></div>

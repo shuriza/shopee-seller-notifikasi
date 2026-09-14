@@ -50,6 +50,14 @@ function renderProfile() {
   $("profile-label").value = state.settings.profileLabel || "";
 }
 
+const STALE_MULTIPLIER = 3;
+
+function isTabStale(tab, settings) {
+  if (!tab.lastReportedAt) return false;
+  const staleMs = Math.max((settings?.pollSeconds ?? 30), 30) * STALE_MULTIPLIER * 1000;
+  return Date.now() - tab.lastReportedAt > staleMs;
+}
+
 function tabKind(tab, kind) {
   const raw = tab?.kinds?.[kind];
   return raw && typeof raw === "object" ? raw : {};
@@ -81,11 +89,19 @@ function renderTabs() {
   for (const tab of state.tabs) {
     const row = document.createElement("article");
     row.className = "tab-row";
+    if (isTabStale(tab, state.settings)) row.classList.add("tab-row--stale");
 
     const identity = document.createElement("div");
     const name = document.createElement("div");
     name.className = "tab-name";
     name.textContent = safeText(tab.label, "Seller Centre");
+    if (isTabStale(tab, state.settings)) {
+      const staleBadge = document.createElement("span");
+      staleBadge.className = "stale-badge";
+      staleBadge.title = `Tab tidak melapor lebih dari ${Math.max((state.settings?.pollSeconds ?? 30), 30) * STALE_MULTIPLIER} detik`;
+      staleBadge.textContent = "Stale";
+      name.append(" ", staleBadge);
+    }
     const last = document.createElement("div");
     last.className = "tab-meta";
     last.textContent = `Laporan terakhir: ${formatTime(Number(tab.lastReportedAt))}`;
@@ -126,6 +142,18 @@ function entryMatches(entry) {
   const kind = $("kind-filter").value;
   if (kind !== "all" && entry.kind !== kind) return false;
   if ($("hide-tests").checked && entry.test) return false;
+  const dateFrom = $("date-from").value;
+  const dateTo = $("date-to").value;
+  if (dateFrom) {
+    const [fy, fm, fd] = dateFrom.split("-").map(Number);
+    const from = new Date(fy, fm - 1, fd).getTime();
+    if (!isNaN(from) && entry.at < from) return false;
+  }
+  if (dateTo) {
+    const [ty, tm, td] = dateTo.split("-").map(Number);
+    const to = new Date(ty, tm - 1, td + 1).getTime(); // awal hari berikutnya, inklusif hari td
+    if (!isNaN(to) && entry.at >= to) return false;
+  }
   const query = $("history-search").value.trim().toLocaleLowerCase("id-ID");
   if (!query) return true;
   return `${entry.label || ""} ${entry.profileLabel || ""}`.toLocaleLowerCase("id-ID").includes(query);
@@ -323,6 +351,30 @@ $("confirm-clear").addEventListener("click", clearHistory);
 $("kind-filter").addEventListener("change", renderHistory);
 $("history-search").addEventListener("input", renderHistory);
 $("hide-tests").addEventListener("change", renderHistory);
+$("date-from").addEventListener("change", renderHistory);
+$("date-to").addEventListener("change", renderHistory);
+$("export-history").addEventListener("click", exportHistory);
+
+/** Export visible (filtered) history entries as JSON download. */
+function exportHistory() {
+  const entries = state.entries.filter(entryMatches);
+  if (!entries.length) {
+    setStatus("Tidak ada riwayat yang sesuai filter untuk diekspor.", "error");
+    return;
+  }
+  const payload = JSON.stringify(entries, null, 2);
+  const blob = new Blob([payload], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const ts = new Date().toISOString().slice(0, 10);
+  a.download = `ssn-riwayat-${ts}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  setStatus(`${entries.length} entri diekspor.`, "success");
+}
 
 chrome.storage?.onChanged?.addListener((changes, area) => {
   if ((area === "local" && (changes.settings || changes.history)) ||
