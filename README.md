@@ -159,8 +159,6 @@ Chrome 152 / Windows 11 (dari sesi 1.2.1) masih berlaku. Fitur UI baru v1.3.0 (s
 tanggal, ekspor JSON, sumber per-kind) belum masuk harness otomatis dan memerlukan verifikasi manual.
 
 Browser test memakai fixture HTTPS lokal, bukan akun Shopee produksi. Cakupannya:
-- **Fix tanggal filter** menggunakan waktu lokal (bukan UTC) agar inklusif hari penuh di zona WIB.
-
 - toast diterima API Chrome; respons sukses audio notif dan chat diterima dari offscreen;
 - offscreen ditutup secara eksplisit, kemudian TEST berikutnya membuat ulang dan memutar audio;
 - kegagalan pembuatan toast disimulasikan, TEST melaporkan error dan percobaan berikutnya berhasil;

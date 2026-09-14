@@ -3,3 +3,5 @@ tools/fixture/.cert/
 tools/*.png
 dist/
 *.zip
+# output sementara gen-assets (hash-nama)
+assets/icons/*-*.png
